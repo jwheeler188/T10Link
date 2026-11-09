@@ -80,7 +80,7 @@ def head(model, sensors, thermostats):
         SETUP
         1. Install the bridge, list the thermostats in its config.json and pair each one once:  t10link pair
            (Menu > Connect HomeKit on the thermostat shows the code; it changes each time that screen opens).
-           A thermostat must not already be in Apple Home.
+           A thermostat must not already be in Apple Home. Or pair on the bridge's web page: http://(bridge IP):2401
         2. Ethernet: set Device IP Address to the machine running the bridge. Port {PORT}.
         3. HVAC data table: one row per thermostat, all on this one component. Entity = Zone,
            ThermostatAddress [1] = the thermostat's position in config.json (1, 2, 3 ...).
@@ -113,7 +113,7 @@ def head(model, sensors, thermostats):
         Thermostat state is only ever set from what the thermostat reports, never assumed from a button press.
 
         ====================== Change Log ==================
-        Version: 1.3.0 Change: Several thermostats on one bridge and one component: one HVAC data table row per thermostat (ThermostatAddress 1, 2, 3 ...). HVAC actions now send the ThermostatAddress; the custom actions take an optional Thermostat argument (blank = 1). New states T_IP, T_PAIRED, T_SENSOR_COUNT, SYS_THERMOSTAT_COUNT. Needs bridge 1.3.0; existing single-thermostat setups keep every state name.
+        Version: 1.3.0 Change: Bridge web page (port 2401) for status, pairing and adding thermostats. Several thermostats on one bridge and one component: one HVAC data table row per thermostat (ThermostatAddress 1, 2, 3 ...). HVAC actions now send the ThermostatAddress; the custom actions take an optional Thermostat argument (blank = 1). New states T_IP, T_PAIRED, T_SENSOR_COUNT, SYS_THERMOSTAT_COUNT. Needs bridge 1.3.0; existing single-thermostat setups keep every state name.
         Version: 1.2.0 Change: The bridge now installs on macOS (including the Savant host) as well as Linux / Raspberry Pi (32- and 64-bit). Profile unchanged apart from these notes.
         Version: 1.1.2 Change: Auto can now be ticked in the HVAC data table. Blueprint enables the Auto column only when the profile has the ThermostatCurrentSetPoint state, so the bridge now sends ThermostatCurrentSetPoint_1 (the active setpoint in Heat / Cool). Needs bridge 1.1.2.
         Version: 1.1.1 Change: HVAC section matches Savant's own Honeywell T-Series profile for Auto (dual setpoint): added IncreaseTemperatureAuto / DecreaseTemperatureAuto and the CurrentAutoChangeOverStatus state variable (CurrentChangeOverStatus_1, true in Auto).

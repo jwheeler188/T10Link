@@ -501,6 +501,146 @@ def profile_tests():
     check("profile: parsers = state_defs exactly", parsers == {k for k, _, _ in b.state_defs(4, n)})
 
 
+# ---------------------------------------------------------------------------
+async def http(port, method, path, body=None, headers=None):
+    r, w = await asyncio.open_connection("127.0.0.1", port)
+    data = b"" if body is None else json.dumps(body).encode()
+    hdr = {"Host": "t", "Content-Length": str(len(data)), **(headers or {})}
+    w.write((f"{method} {path} HTTP/1.1\r\n" + "".join(f"{k}: {v}\r\n" for k, v in hdr.items()) + "\r\n").encode() + data)
+    await w.drain()
+    raw = await r.read()
+    w.close()
+    head, _, payload = raw.partition(b"\r\n\r\n")
+    return int(head.split()[1]), head.decode(), payload
+
+
+async def web_tests():
+    import t10link_web as web
+    tmp = Path(tempfile.mkdtemp())
+    # a 1.2-style config.json: the page converts it to the thermostats list when it adds one
+    (tmp / "config.json").write_text(json.dumps({"tcp_port": 2400, "thermostat_ip": "192.168.1.50",
+                                                 "allowed_clients": ["auto", "192.168.1.20"]}))
+    (tmp / "pairing.json").write_text("{}")
+    cfg = b.load_config(tmp / "config.json")
+    cfg.update(tcp_port=0, confirm_seconds=6)
+    bridge = b.Bridge(cfg, tmp, tmp / "config.json")
+    t1 = bridge.thermostats[0]
+    f1, f2 = FakeT10(ACCS), FakeT10(ACCS)
+
+    def fake_connect(t, fake):
+        async def go():
+            if not t.pairing_path.exists():
+                await t.publish({"SYS_PAIRED": 0, "SYS_ERROR": f"not paired: run  {t.pair_cmd}  on the bridge machine"})
+                return False
+            t.pairing = fake
+            fake.dispatcher_connect(t.on_event)
+            t.model = b.Model(await fake.list_accessories_and_characteristics())
+            await t.publish({"SYS_PAIRED": 1, "SYS_LIVE": 1})
+            await t.set_online(True)
+            await t.read_all()
+            return True
+        return go
+
+    t1.connect = fake_connect(t1, f1)
+    await bridge.start()
+    bridge.start_loop(t1)
+    page = web.WebPage(bridge)
+    srv = await asyncio.start_server(page.handle, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+    await asyncio.sleep(0.4)
+    J = {"Content-Type": "application/json", "X-T10Link": "1"}
+
+    code, _, body = await http(port, "GET", "/")
+    check("web: page served", code == 200 and b"<title>T10Link</title>" in body)
+    code, _, body = await http(port, "GET", "/api/status")
+    st = json.loads(body)
+    check("web: status shows thermostat 1 connected, Cool, 72", code == 200 and len(st["thermostats"]) == 1 and
+          (st["thermostats"][0]["paired"], st["thermostats"][0]["connected"], st["thermostats"][0]["mode"],
+           st["thermostats"][0]["temp"]) == (True, True, "Cool", "72"), st)
+    check("web: status lists the room sensor", st["thermostats"][0]["sensors"][0]["name"] == "Master Bedroom Air Sensor 01")
+    code, _, _ = await http(port, "POST", "/api/add", {"ip": "192.168.1.51"}, {"Content-Type": "application/json"})
+    check("web: change without X-T10Link header refused (403)", code == 403 and len(bridge.thermostats) == 1)
+    code, _, body = await http(port, "POST", "/api/add", {"ip": "not-an-ip"}, J)
+    check("web: add refuses a bad IP", code == 400 and b"not an IP" in body, body)
+    code, _, body = await http(port, "POST", "/api/add", {"ip": "192.168.1.51"}, J)
+    raw = json.loads((tmp / "config.json").read_text())
+    check("web: add thermostat 2", code == 200 and len(bridge.thermostats) == 2 and b"ThermostatAddress 2" in body, body)
+    check("web: config.json converted to the thermostats list, other settings kept",
+          raw.get("thermostats") == [{"ip": "192.168.1.50", "port": 80, "sensor_order": []}, {"ip": "192.168.1.51"}]
+          and "thermostat_ip" not in raw and raw.get("allowed_clients") == ["auto", "192.168.1.20"], raw)
+    check("web: the bridge reloads the same list", [t["ip"] for t in b.thermostat_configs(b.load_config(tmp / "config.json"))]
+          == ["192.168.1.50", "192.168.1.51"])
+    await asyncio.sleep(0.3)
+    check("web: thermostat 2 states published, not paired",
+          bridge.values.get("T2_IP") == "192.168.1.51" and bridge.values.get("T2_PAIRED") == "0"
+          and bridge.values.get("SYS_THERMOSTAT_COUNT") == "2" and t1.tag == "thermostat 1: ",
+          (bridge.values.get("T2_IP"), bridge.values.get("T2_PAIRED"), t1.tag))
+    code, _, _ = await http(port, "POST", "/api/add", {"ip": "192.168.1.51"}, J)
+    check("web: duplicate IP refused", code == 400)
+
+    t2 = bridge.thermostats[1]
+    t2.connect = fake_connect(t2, f2)
+    code, _, body = await http(port, "POST", "/api/pair", {"n": 2, "code": "1234"}, J)
+    check("web: pair refuses a short code before contacting the thermostat", code == 400 and b"8 digits" in body, body)
+    real_q, real_pair = b.hap_local.query_hap_record, b.hap_local.pair
+    seen = {}
+
+    async def fake_pair(ip, pin, record=None):
+        seen.update(ip=ip, pin=pin)
+        return {"iOSPairingId": "test", "AccessoryPairingID": "AA:BB"}
+
+    b.hap_local.query_hap_record = lambda ip, tries=8, timeout=2.0: {"name": "T10 Thermostat", "id": "AA:BB", "sf": "1", "md": "T10"}
+    b.hap_local.pair = fake_pair
+    try:
+        code, _, body = await http(port, "POST", "/api/pair", {"n": 2, "code": "123-45-678"}, J)
+        check("web: pair thermostat 2", code == 200 and seen == {"ip": "192.168.1.51", "pin": "123-45-678"}, (code, body, seen))
+        pf = tmp / "pairing-2.json"
+        check("web: pairing-2.json saved, mode 600, no setup code in it",
+              pf.exists() and (pf.stat().st_mode & 0o777) == 0o600 and "123" not in pf.read_text())
+        await asyncio.sleep(0.6)
+        st = json.loads((await http(port, "GET", "/api/status"))[2])
+        check("web: thermostat 2 connects straight after pairing",
+              st["thermostats"][1]["connected"] and bridge.values.get("ThermostatMode_2") == "Cool"
+              and bridge.values.get("SYS_PAIRED") == "1", st["thermostats"][1])
+        code, _, body = await http(port, "POST", "/api/pair", {"n": 2, "code": "12345678"}, J)
+        check("web: pairing an already paired thermostat refused", code == 400 and b"already paired" in body)
+        await http(port, "POST", "/api/add", {"ip": "192.168.1.52"}, J)
+        b.hap_local.query_hap_record = lambda ip, tries=8, timeout=2.0: {"name": "T10", "id": "CC", "sf": "0"}
+        code, _, body = await http(port, "POST", "/api/pair", {"n": 3, "code": "12345678"}, J)
+        check("web: thermostat already in Apple Home: explained, not paired",
+              code == 400 and b"already paired to another HomeKit controller" in body and not (tmp / "pairing-3.json").exists(), body)
+    finally:
+        b.hap_local.query_hap_record, b.hap_local.pair = real_q, real_pair
+    code, _, body = await http(port, "POST", "/api/remove", {"n": 2}, J)
+    check("web: remove refuses a paired / not-last thermostat", code == 400 and len(bridge.thermostats) == 3, body)
+    code, _, body = await http(port, "POST", "/api/remove", {"n": 3}, J)
+    check("web: remove the last, unpaired thermostat",
+          code == 200 and len(bridge.thermostats) == 2 and len(json.loads((tmp / "config.json").read_text())["thermostats"]) == 2
+          and bridge.values.get("T3_IP") == "" and bridge.values.get("SYS_THERMOSTAT_COUNT") == "2", body)
+    code, _, _ = await http(port, "GET", "/nope")
+    check("web: unknown path 404", code == 404)
+
+    check("web_clients lan: private addresses yes, public no",
+          page.client_allowed("192.168.7.9") and page.client_allowed("10.1.2.3") and not page.client_allowed("8.8.8.8"))
+    bridge.cfg.update(web_clients=["10.9.9.0/24"], web_password="secret")
+    strict = web.WebPage(bridge)
+    check("web_clients list: only those (plus allowed_clients and this machine)",
+          strict.client_allowed("10.9.9.4") and not strict.client_allowed("192.168.7.9")
+          and strict.client_allowed("192.168.1.20") and strict.client_allowed("127.0.0.1"))
+    srv2 = await asyncio.start_server(strict.handle, "127.0.0.1", 0)
+    p2 = srv2.sockets[0].getsockname()[1]
+    import base64
+    code1, head, _ = await http(p2, "GET", "/")
+    code2, _, _ = await http(p2, "GET", "/", headers={"Authorization": "Basic " + base64.b64encode(b"x:wrong").decode()})
+    code3, _, _ = await http(p2, "GET", "/", headers={"Authorization": "Basic " + base64.b64encode(b"admin:secret").decode()})
+    check("web_password: 401 without, 401 wrong, 200 right", (code1, code2, code3) == (401, 401, 200) and "WWW-Authenticate" in head)
+    bridge.request_stop("test")
+    for task in list(bridge.loops.values()):
+        task.cancel()
+    srv.close()
+    srv2.close()
+
+
 if __name__ == "__main__":
     unit_tests()
     asyncio.run(protocol_tests())
@@ -509,5 +649,7 @@ if __name__ == "__main__":
     asyncio.run(multi_protocol_tests())
     print("\n-- Blueprint profile")
     profile_tests()
+    print("\n-- web page")
+    asyncio.run(web_tests())
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     sys.exit(1 if FAIL else 0)

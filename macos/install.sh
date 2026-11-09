@@ -92,7 +92,7 @@ OLD_VER="$(ver "$DEST/t10link_bridge.py")"
 NEW_VER="$(ver "$SRC/t10link_bridge.py")"
 say "Installing T10Link ${NEW_VER} to $DEST${OLD_VER:+ (replacing $OLD_VER)}"
 mkdir -p "$DEST/logs"
-cp "$SRC/t10link_bridge.py" "$SRC/hap_local.py" "$DEST/"
+cp "$SRC/t10link_bridge.py" "$SRC/hap_local.py" "$SRC/t10link_web.py" "$DEST/"
 cp "$HERE/t10link" "$HERE/uninstall.sh" "$DEST/"
 if [ -f "$DEST/config.json" ]; then
   echo "    keeping existing config.json"
@@ -230,6 +230,7 @@ cat <<EOF
     Bridge version:  $NEW_VER
     Savant profile:  Device IP Address $IP, port $TCP_PORT
     Config:          $DEST/config.json   (then: sudo t10link restart)
+    Web page:        http://$IP:$(sed -n 's/.*"web_port": *\([0-9]*\).*/\1/p' "$DEST/config.json" | head -1 | grep . || echo 2401)   (status, pairing, adding thermostats)
     Control:         t10link status | states | logs | pair | dump | sudo t10link restart
     Remove:          sudo $DEST/uninstall.sh
 

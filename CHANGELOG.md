@@ -10,6 +10,9 @@
   Thermostat argument (blank = 1). Commands without an address still go to thermostat 1.
 - Thermostat *n*'s states: `ThermostatMode_n`, `Tn_MODE`, `Tn_SENSOR1_TEMP` ... Thermostat 1 keeps
   every 1.2 state name.
+- **Web page** on the bridge (`http://<bridge>:2401`): every thermostat's status, pairing with the
+  code the thermostat shows, and adding a thermostat by IP without a restart. Private network only
+  by default (`web_clients`), optional `web_password`; unpairing stays on the command line.
 - `t10link pair [N]` / `unpair [N]` / `dump [N]`; `t10link pair` pairs the next unpaired thermostat.
   Thermostat 2's pairing is kept in `pairing-2.json`, and so on.
 - New states: `T_IP`, `T_PAIRED`, `T_SENSOR_COUNT`, `SYS_THERMOSTAT_COUNT`. `SYS_ONLINE`,

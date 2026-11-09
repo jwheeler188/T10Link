@@ -17,6 +17,7 @@ Blueprint component handle up to 8 thermostats (16 with a regenerated profile).
 - [Requirements](#requirements)
 - [Install the bridge](#install-the-bridge)
 - [Pair the thermostat](#pair-the-thermostat)
+- [The web page](#the-web-page)
 - [Blueprint setup](#blueprint-setup)
 - [Several thermostats](#several-thermostats)
 - [Using it in Savant](#using-it-in-savant)
@@ -107,6 +108,9 @@ The installer prints the IP address and port to use in Blueprint. Then edit `con
 | `units` | `auto` (the thermostat's display units), `F` or `C` |
 | `max_sensors` | Room-sensor slots per thermostat (4; the profile has states for 4) |
 | `sensor_order` (in a `thermostats` entry) | Optional: fix sensor numbers by name, e.g. `["Master Bedroom Air Sensor 01"]` |
+| `web_port` | The web page's port (2401; 0 turns the page off) |
+| `web_clients` | Who may open the web page: `"lan"` (private network addresses: 10.x, 172.16-31.x, 192.168.x), `"any"`, or a list of IPs / networks. Machines in `allowed_clients` always may |
+| `web_password` | Optional password for the web page (any user name) |
 | `poll_seconds` | Safety poll (60). HomeKit pushes changes instantly anyway |
 | `offline_grace_seconds` | Short Wi-Fi drops aren't shown in Savant (120) |
 
@@ -127,8 +131,30 @@ Only HomeKit's long-term pairing keys are saved (`pairing.json` in the install f
 `pairing-2.json`, `pairing-3.json` ... for the other thermostats; readable by the service user only). The setup code is never stored. The Honeywell Home / Resideo app keeps working
 alongside.
 
+You can also pair from the [web page](#the-web-page).
+
 To unpair: `t10link unpair` (`t10link unpair 2` for thermostat 2). If the pairing keys are lost, reset HomeKit on the thermostat
 (Menu > Advanced Setup > Reset > HomeKit Reset) and pair again.
+
+## The web page
+
+The bridge has a small web page at **`http://<bridge IP>:2401`** (the installer prints the
+address). Open it from any computer or phone on your network. It shows:
+
+- each thermostat: number, IP, connected or not, temperature, mode, setpoints, humidity, room sensors
+- a **Pair** box on every thermostat that isn't paired: open **Menu > Connect HomeKit** on that
+  thermostat, type the code it shows and press Pair. The bridge connects to it straight away.
+- **Add a thermostat**: type its IP address. It's saved to `config.json` as the next number (its
+  ThermostatAddress in Blueprint), and the bridge starts on it without a restart.
+- **Remove**, only on the last thermostat and only while it isn't paired (for a typo'd IP).
+
+Unpairing stays on the bridge machine (`t10link unpair N`), so nobody on the network can take a
+working thermostat out of Savant from a browser.
+
+Who can open it: machines on your private network (`web_clients`), plus the machines in
+`allowed_clients`. Set `web_password` in `config.json` to ask for a password too. The page uses
+plain HTTP on your network, like the Savant connection; the setup code is only used once and never
+stored. To turn the page off, set `web_port` to 0.
 
 ## Blueprint setup
 
@@ -168,8 +194,8 @@ for the same bridge, and don't import the profile again.
    The first is thermostat 1, the second thermostat 2, and so on. Keep the order once Savant is set
    up: the number ties each data table row to its thermostat. Add new thermostats at the end.
    Then `t10link restart`.
-2. Pair each one: `t10link pair` (repeat it; it pairs the next unpaired thermostat), or
-   `t10link pair 2` for a particular one. `t10link status` shows `T_PAIRED`, `T2_PAIRED` ...
+2. Pair each one: on the [web page](#the-web-page), or `t10link pair` (repeat it; it pairs the
+   next unpaired thermostat), or `t10link pair 2` for a particular one. `t10link status` shows `T_PAIRED`, `T2_PAIRED` ...
 3. In Blueprint's HVAC data table add one row per thermostat on the same T10Link component, with
    **ThermostatAddress [1]** = its number: 1, 2, 3 ... Each row gets its own Zone, and its own
    Heat / Cool / Auto ticks.
@@ -260,6 +286,7 @@ Put `@N ` in front for thermostat N (`@2 SETHEAT 70`); without it a command goes
 | `SYS_ONLINE` = 0, `SYS_ERROR` = thermostat unreachable | `SYS_ERROR` names the thermostat when there are several. Check its `ip` in `config.json` (DHCP reservation), that the thermostat is on Wi-Fi, and `ping` it from the bridge. Its Wi-Fi sleeps: the first ping may fail |
 | Mac install: "Python 3.10 or newer not found" | Install Python 3.12+ from python.org (Apple's `python3` is 3.9), then rerun the installer |
 | Pi install: venv or pip errors | `sudo apt update && sudo apt install python3-venv`, then rerun. 32-bit Pi OS downloads ready-made packages from piwheels.org, so it needs that site reachable once |
+| Web page doesn't open | Use the bridge's IP and port 2401. Check `web_port`, that your computer is on the same network (`web_clients`), and `t10link logs` ("web page off" means the port was taken) |
 | Component shows disconnected in Savant | Bridge not running (`t10link status`), wrong IP/port in Blueprint, the Savant host isn't in `allowed_clients` (`SYS_REJECTED_CLIENT` shows who was refused), or a Mac's firewall blocks Python |
 | Savant shows a setpoint the thermostat doesn't | It's a saved setpoint for another mode (`T_SAVED_SETPOINTS`), applied when the mode switches. `t10link send CLEARSAVED` forgets it |
 | `SYS_ERROR` = "no thermostat 3 in config.json" | A data table row (or a custom action) uses a ThermostatAddress that isn't in the bridge's `thermostats` list |

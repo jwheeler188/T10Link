@@ -63,7 +63,7 @@ say "Installing T10Link $NEW_VER to $DEST${OLD_VER:+ (replacing $OLD_VER)}, serv
 sudo mkdir -p "$DEST"
 sudo chown "$USER_NAME" "$DEST"
 sudo chmod 700 "$DEST"          # pairing.json (HomeKit keys) lives here
-sudo install -m 644 -o "$USER_NAME" bridge/t10link_bridge.py bridge/hap_local.py "$DEST/"
+sudo install -m 644 -o "$USER_NAME" bridge/t10link_bridge.py bridge/hap_local.py bridge/t10link_web.py "$DEST/"
 if [ -f "$DEST/config.json" ]; then
   echo "    keeping existing config.json"
 else
@@ -122,6 +122,7 @@ cat <<EOF
     Bridge version:  $NEW_VER
     Savant profile:  Device IP Address ${IP:-<this machine's IP>}, port $PORT
     Config:          $DEST/config.json   (then: t10link restart)
+    Web page:        http://${IP:-<this machine's IP>}:$(sed -n 's/.*"web_port": *\([0-9]*\).*/\1/p' "$DEST/config.json" | head -1 | grep . || echo 2401)   (status, pairing, adding thermostats)
     Control:         t10link status | states | logs | restart | pair | dump
     Remove:          sudo $DEST/uninstall.sh
 

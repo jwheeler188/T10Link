@@ -63,6 +63,12 @@ DEFAULT_CONFIG = {
     "confirm_seconds": 20,            # how long to wait for a change to be confirmed
     "offline_grace_seconds": 120,     # Wi-Fi power-save blips shorter than this aren't shown
     "log_level": "INFO",
+    # Web page for status, pairing and adding thermostats: http://<bridge>:web_port (0 = off).
+    # web_clients: "lan" = private network addresses (10.x, 172.16-31.x, 192.168.x), "any", or a
+    # list of IPs / networks; allowed_clients may always open it. web_password: optional (any user name).
+    "web_port": 2401,
+    "web_clients": "lan",
+    "web_password": "",
     # Who may connect on tcp_port. Set here only, never from Blueprint (the Savant connection is
     # unauthenticated). "auto" = this machine; add the Savant host's IP when the bridge runs elsewhere.
     "allowed_clients": "auto",
@@ -1024,10 +1030,14 @@ WRITE_VERBS = ("SETMODE", "SETHEAT", "SETCOOL", "SETTEMP", "INCHEAT", "DECHEAT",
 class Bridge:
     """The Savant side: TCP server, the bridge-wide SYS_* states, and command routing by address."""
 
-    def __init__(self, cfg, home: Path):
+    def __init__(self, cfg, home: Path, config_path: Path | None = None):
         self.cfg, self.home = cfg, home
+        self.config_path = Path(config_path) if config_path else home / "config.json"
         self.values = {}
         self.clients = set()
+        self.loops = {}                # thermostat n -> its hap_loop task
+        self.pair_lock = asyncio.Lock()
+        self.pairing_now = None        # thermostat n being paired from the web page
         self.rejected_logged = {}
         self.allow_any, self.allow_local, self.allow_nets = parse_allowed(cfg.get("allowed_clients", "auto"))
         self.max_sensors = max(1, min(16, int(cfg.get("max_sensors", 4))))
@@ -1175,6 +1185,126 @@ class Bridge:
                 pass
             log.info("Savant disconnected %s", peer)
 
+    # -- web page: status, pairing, adding thermostats -------------------------
+    def retag(self):
+        multi = len(self.thermostats) > 1
+        for t in self.thermostats:
+            t.tag = f"thermostat {t.n}: " if multi else ""
+            t.log.extra["p"] = t.tag
+
+    def start_loop(self, t):
+        if self.stopping is not None and not self.stopping.is_set():
+            self.loops[t.n] = asyncio.ensure_future(t.hap_loop())
+
+    def write_thermostats(self, change):
+        """Apply change(list) to config.json's thermostats list, keeping every other setting. A 1.2
+        config (thermostat_ip ...) is converted to the list first."""
+        path = self.config_path
+        raw = json.loads(path.read_text()) if path.exists() else {}
+        if not raw.get("thermostats"):
+            raw["thermostats"] = [{"ip": t.ip, "port": t.port, "sensor_order": t.sensor_order} for t in self.thermostats]
+            for k in ("thermostat_ip", "thermostat_port", "sensor_order"):
+                raw.pop(k, None)
+        change(raw["thermostats"])
+        thermostat_configs(dict(self.cfg, thermostats=raw["thermostats"]))     # validate before writing
+        mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(raw, indent=2) + "\n")
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+        self.cfg["thermostats"] = raw["thermostats"]
+
+    async def add_thermostat(self, ip):
+        """Add a thermostat by IP while running: saved to config.json, connected straight away."""
+        try:
+            ip = str(ipaddress.ip_address(str(ip).strip()))
+        except ValueError:
+            raise ValueError(f"not an IP address: {ascii_text(ip, 60)!r}")
+        if any(t.ip == ip for t in self.thermostats):
+            raise ValueError(f"{ip} is already thermostat {next(t.n for t in self.thermostats if t.ip == ip)}")
+        if len(self.thermostats) >= MAX_THERMOSTATS:
+            raise ValueError(f"a bridge takes at most {MAX_THERMOSTATS} thermostats")
+        self.write_thermostats(lambda lst: lst.append({"ip": ip}))
+        tc = thermostat_configs(self.cfg)[-1]
+        t = Thermostat(self, tc)
+        self.thermostats.append(t)
+        self.by_n[t.n] = t
+        self.retag()
+        log.info("web page: added thermostat %s at %s", t.n, ip)
+        await self.publish(self.sys_summary())
+        await t.publish({"T_IP": t.ip, "T_PAIRED": t.sys["SYS_PAIRED"], "T_ONLINE": 0, "T_PENDING": "", "T_ERROR": "",
+                         "T_LAST_CHANGE": ""})
+        self.start_loop(t)
+        return t
+
+    async def remove_thermostat(self, n):
+        """Only the last thermostat, and only while it isn't paired: removing it can't renumber the
+        others or take a working thermostat out of Savant. (Unpairing stays on the command line.)"""
+        t = self.by_n.get(n)
+        if t is None:
+            raise ValueError(f"no thermostat {n}")
+        if n != len(self.thermostats) or n == 1:
+            raise ValueError("only the last thermostat can be removed here, and not the only one")
+        if t.pairing_path.exists():
+            raise ValueError(f"thermostat {n} is paired: unpair it first on the bridge machine (t10link unpair {n})")
+        self.write_thermostats(lambda lst: lst.pop())
+        task = self.loops.pop(n, None)
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await t.close_hap()
+        self.thermostats.remove(t)
+        del self.by_n[n]
+        self.retag()
+        log.info("web page: removed thermostat %s (%s)", n, t.ip)
+        await self.publish({key_for(n, "T_IP"): "", key_for(n, "T_ONLINE"): 0, key_for(n, "T_PAIRED"): 0, **self.sys_summary()})
+
+    async def pair(self, n, code):
+        """Pair thermostat n with the code it shows (from the web page); the bridge connects at once."""
+        t = self.by_n.get(n)
+        if t is None:
+            raise PairError(f"no thermostat {n}")
+        if t.pairing_path.exists():
+            raise PairError(f"thermostat {n} is already paired")
+        if self.pair_lock.locked():
+            raise PairError(f"thermostat {self.pairing_now} is being paired: wait for it to finish")
+        async with self.pair_lock:
+            self.pairing_now = n
+            try:
+                hap_local.normalize_pin(code)          # a typo fails before waking the thermostat
+            except ValueError as e:
+                self.pairing_now = None
+                raise PairError(str(e))
+            try:
+                t.log.info("web page: pairing with %s", t.ip)
+                rec = await find_record(t.ip)
+                await pair_with_code(t.ip, code, t.pairing_path, rec)
+            finally:
+                self.pairing_now = None
+        t.log.info("web page: paired (%s)", rec.get("name"))
+        await t.publish({"SYS_PAIRED": 1, "SYS_ERROR": ""})
+        t.wake.set()
+        return f"Paired thermostat {n} ({rec.get('name', 'T10')}). The bridge is connecting to it now."
+
+    def status(self):
+        """Everything the web page shows."""
+        out = []
+        for t in self.thermostats:
+            sh = t.shown
+            g = lambda k: "" if sh.get(k) is None else str(sh.get(k))  # noqa: E731
+            sensors = [{"n": i, "name": g(sensor_key(i, "NAME")), "temp": g(sensor_key(i, "TEMP")),
+                        "humidity": g(sensor_key(i, "HUMIDITY")), "motion": g(sensor_key(i, "MOTION")) == "1"}
+                       for i in range(1, self.max_sensors + 1) if g(sensor_key(i, "PRESENT")) == "1"]
+            out.append({"n": t.n, "ip": t.ip, "paired": t.pairing_path.exists(), "connected": bool(t.online),
+                        "online": g("T_ONLINE") == "1", "name": g("T_NAME"), "model": g("T_MODEL"),
+                        "firmware": g("T_FIRMWARE"), "mode": g("T_MODE"), "state": g("T_STATE"), "temp": g("T_TEMP"),
+                        "heat": g("T_HEAT_SETPOINT"), "cool": g("T_COOL_SETPOINT"), "humidity": g("T_HUMIDITY"),
+                        "units": g("T_UNITS"), "pending": g("T_PENDING"), "error": g("T_ERROR"),
+                        "problem": str(t.sys.get("SYS_ERROR") or ""), "sensors": sensors,
+                        "removable": t.n == len(self.thermostats) and t.n > 1 and not t.pairing_path.exists()})
+        return {"version": VERSION, "thermostats": out, "max": MAX_THERMOSTATS, "pairing": self.pairing_now,
+                "savant_connected": len(self.clients), "port": int(self.cfg["tcp_port"])}
+
     def request_stop(self, why):
         self.stop_reason = why
         self.stopping.set()
@@ -1203,12 +1333,24 @@ class Bridge:
         log.info("thermostats: %s", ", ".join(f"{t.n}={t.ip}" for t in self.thermostats))
         who = (["this machine"] if self.allow_local else []) + [str(n) for n in self.allow_nets]
         log.info("accepting Savant connections from: %s", "anyone" if self.allow_any else ", ".join(who) or "localhost only")
-        loops = [asyncio.ensure_future(t.hap_loop()) for t in self.thermostats]
+        for t in self.thermostats:
+            self.start_loop(t)
+        web_srv = None
+        if int(self.cfg.get("web_port") or 0):
+            import t10link_web
+            try:
+                web_srv = await asyncio.start_server(t10link_web.WebPage(self).handle, "0.0.0.0", int(self.cfg["web_port"]))
+                log.info("web page on :%s (status, pairing, adding thermostats)", self.cfg["web_port"])
+            except OSError as e:
+                log.warning("web page off: can't use port %s (%s); set web_port in config.json", self.cfg["web_port"], e)
         await self.stopping.wait()
         log.info("shutting down (%s)", self.stop_reason)
+        loops = list(self.loops.values())
         for task in loops:
             task.cancel()
         srv.close()
+        if web_srv:
+            web_srv.close()
         for w in list(self.clients):
             try:
                 w.close()
@@ -1231,6 +1373,37 @@ def nudge_service(cfg, n=1, verb="REFRESH"):
         return True
     except OSError:
         return False
+
+
+class PairError(Exception):
+    pass
+
+
+async def find_record(ip, tries=25):
+    """The thermostat's HomeKit record, checked to be pairable."""
+    rec = await asyncio.get_running_loop().run_in_executor(None, lambda: hap_local.query_hap_record(ip, tries=tries))
+    if not rec:
+        raise PairError(f"No HomeKit answer from {ip}. Check the thermostat's ip in config.json and that it is on Wi-Fi "
+                        "(its Wi-Fi sleeps: try again).")
+    if str(rec.get("sf")) == "0":
+        raise PairError("It is already paired to another HomeKit controller. Remove it from Apple Home (or the other "
+                        "controller) first, or use Menu > Advanced Setup > Reset > HomeKit Reset on the thermostat.")
+    return rec
+
+
+async def pair_with_code(ip, code, out: Path, rec):
+    """Pair-Setup with the code the thermostat shows; save only the long-term keys (mode 600)."""
+    try:
+        pin = hap_local.normalize_pin(code)
+    except ValueError as e:
+        raise PairError(str(e))
+    try:
+        data = await asyncio.wait_for(hap_local.pair(ip, pin, record=rec), 60)
+    except Exception as e:
+        raise PairError(f"Pairing failed: {type(e).__name__}: {e}. A wrong code fails harmlessly; after several "
+                        "wrong tries the thermostat locks pairing for a while. The code changes each time "
+                        "Connect HomeKit opens.")
+    hap_local.write_private_json(out, data)
 
 
 def pick_thermostat(cfg, home: Path, n, purpose):
@@ -1260,29 +1433,16 @@ async def cli_pair(cfg, home: Path, n=None):
     many = len(thermostat_configs(cfg)) > 1
     print(f"{'Thermostat ' + str(tc['n']) + ': l' if many else 'L'}ooking for the thermostat's HomeKit record at {ip} "
           "(it may take a few seconds to wake) ...")
-    rec = await asyncio.get_running_loop().run_in_executor(None, lambda: hap_local.query_hap_record(ip, tries=25))
-    if not rec:
-        raise SystemExit(f"No HomeKit answer from {ip}. Check the thermostat's ip in config.json and that it is on Wi-Fi.")
-    print(f"Found {rec['name']} ({rec.get('md', '?')}), HomeKit id {rec['id']}, "
-          f"{'NOT paired' if str(rec.get('sf')) != '0' else 'already PAIRED to another controller'}.")
-    if str(rec.get("sf")) == "0":
-        raise SystemExit("Remove it from Apple Home (or the other controller) first, or use "
-                         "Menu > Advanced Setup > Reset > HomeKit Reset on the thermostat.")
-    print("\nOn the thermostat: Menu > Connect HomeKit. It shows an 8-digit code (123-45-678).")
-    print("The code changes each time that screen opens: use the one showing now.")
-    pin = getpass.getpass("HomeKit setup code (hidden): ")
     try:
-        pin = hap_local.normalize_pin(pin)
-    except ValueError as e:
+        rec = await find_record(ip)
+        print(f"Found {rec['name']} ({rec.get('md', '?')}), HomeKit id {rec['id']}, NOT paired.")
+        print("\nOn the thermostat: Menu > Connect HomeKit. It shows an 8-digit code (123-45-678).")
+        print("The code changes each time that screen opens: use the one showing now.")
+        code = getpass.getpass("HomeKit setup code (hidden): ")
+        print("Pairing ... (up to 30 s)")
+        await pair_with_code(ip, code, out, rec)
+    except PairError as e:
         raise SystemExit(str(e))
-    print("Pairing ... (up to 30 s)")
-    try:
-        data = await asyncio.wait_for(hap_local.pair(ip, pin, record=rec), 60)
-    except Exception as e:
-        raise SystemExit(f"Pairing failed: {type(e).__name__}: {e}\n"
-                         "A wrong code fails harmlessly; after several wrong tries the thermostat "
-                         "locks pairing for a while.")
-    hap_local.write_private_json(out, data)
     print(f"\nPaired thermostat {tc['n']}. Long-term keys saved to {out} (mode 600). The setup code was not saved.")
     if nudge_service(cfg, tc["n"]):
         print("Told the running bridge to connect.")
@@ -1389,7 +1549,7 @@ def main():
         logging.getLogger(noisy).setLevel(logging.DEBUG if a.verbose else logging.WARNING)
     log.info("T10Link bridge %s, Python %s", VERSION, sys.version.split()[0])
     try:
-        code = asyncio.run(Bridge(cfg, home).run())
+        code = asyncio.run(Bridge(cfg, home, Path(a.config).resolve()).run())
     except OSError as e:
         log.error("could not start: %s (is port %s already in use?)", e, cfg["tcp_port"])
         code = 2

@@ -6,6 +6,9 @@
     {"ip": "192.168.1.50", "port": 80, "sensor_order": []}
   ],
   "allowed_clients": ["auto"],
+  "web_port": 2401,
+  "web_clients": "lan",
+  "web_password": "",
   "units": "auto",
   "max_sensors": 4,
   "log_level": "INFO"
