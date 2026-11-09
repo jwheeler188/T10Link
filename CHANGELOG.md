@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.4.0 (2026-11-09)
+
+Easier to install and to service.
+
+- **One-command install**: `curl -fsSL https://raw.githubusercontent.com/jwheeler188/T10Link/main/get.sh | bash`
+  downloads the latest release, checks its SHA-256 and installs. From the zip, `./install.sh`
+  picks the Mac or Linux installer and asks for sudo itself.
+- **Mac: Python is installed for you** if there's no 3.10+ (asks first; `--install-python` to
+  skip the question): Python 3.13 from python.org, checked by SHA-256 and signature, framework
+  only, so the `python3` command, PATH and shell profiles stay exactly as they were (Savant's own
+  scripts are unaffected).
+- A new install starts with **no thermostats** and no config editing: everything is on the web
+  page. The installer prints the next steps and, on a Mac you're sitting at, opens the page.
+- Web page:
+  - **Search the network** finds T9 / T10 thermostats (unicast HomeKit queries on the bridge's
+    /24 networks; about 6 s, or up to about 25 s on a Mac when a thermostat's Wi-Fi is asleep:
+    macOS calls an unanswering host "down" for 20 s, so the Mac looks a second time) and shows each one's **IP and MAC address** for the router's DHCP
+    reservation. It marks thermostats already added, ones paired to another HomeKit app, and a
+    paired thermostat that **moved to a new IP** (one click to follow it).
+  - The **DHCP reservation** step is a prominent first step of Add a thermostat, and Add needs
+    "This IP is reserved in the router" ticked.
+  - **Unpair** (the thermostat forgets the bridge; it keeps its number) and **Remove** (unpairs,
+    then removes **any** thermostat; later ones move up one number, files included, and the page
+    says which ThermostatAddress values to change). If the thermostat doesn't answer, nothing
+    changes until you confirm deleting the bridge's keys anyway.
+  - **Change IP** for a thermostat with a new address; the pairing is kept.
+  - **Allow** button when a Savant host is refused (adds it to `allowed_clients`).
+  - **Savant setup** box: Device IP Address, port, connection, and a **Blueprint profile
+    download** (the installer now copies the profile next to the bridge).
+  - Each thermostat's MAC address.
+- `SYS_ERROR` says "no thermostats yet" until one is added; commands then get an error instead of
+  failing.
+- Profile: notes only (setup now points to the web page). Re-importing is optional.
+
 
 ## 1.3.1 (2026-11-08)
 

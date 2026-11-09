@@ -5,11 +5,15 @@
 #
 #   sudo ./install.sh                 install or upgrade; the service runs as you
 #   sudo ./install.sh --user RPM      run the service as a specific macOS user
+#   --install-python                  install Python from python.org without asking, if it's needed
+#   --no-open                         don't open the web page at the end
 #
-# Needs Python 3.10 or newer (Apple's /usr/bin/python3 is 3.9: install Python from
-# https://www.python.org/downloads/macos/) and internet access once, to download aiohomekit into a
-# private environment in ~/T10Link/venv. Upgrades keep config.json, the HomeKit pairing, sensor
-# numbering and saved setpoints.
+# Needs Python 3.10 or newer. Apple's /usr/bin/python3 is 3.9, so if there's no newer one the
+# installer offers to install Python 3.13 from python.org: the framework only, with no "python3"
+# command, PATH or shell profile changes, so other apps (Savant's own scripts on a Savant host)
+# keep the python3 they use now. Needs internet access once, to download aiohomekit into a private
+# environment in ~/T10Link/venv. Upgrades keep config.json, the HomeKit pairing, sensor numbering
+# and saved setpoints.
 set -euo pipefail
 trap 'printf "\033[31mERROR:\033[0m install stopped at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
@@ -19,10 +23,18 @@ AIOHOMEKIT="aiohomekit==4.0.1"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC="$(cd "$HERE/../bridge" && pwd)"
 
+# python.org installer used when no Python 3.10+ is found (checked by SHA-256 and signature)
+PY_PKG_VER="3.13.17"
+PY_PKG_URL="https://www.python.org/ftp/python/${PY_PKG_VER}/python-${PY_PKG_VER}-macos11.pkg"
+PY_PKG_SHA256="3053592af66128269efab37fe7851a4894920b27c442aeec99ce4d34d17c07e3"
+
 RUN_USER="${SUDO_USER:-${USER:-$(id -un)}}"
+AUTO_PY=0; OPEN_PAGE=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --user) RUN_USER="$2"; shift 2 ;;
+    --install-python) AUTO_PY=1; shift ;;
+    --no-open) OPEN_PAGE=0; shift ;;
     *) echo "unknown option: $1"; exit 1 ;;
   esac
 done
@@ -46,19 +58,68 @@ if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = "1" ]; then ARCH=(
 as_user() { sudo -u "$RUN_USER" -H ${ARCH[@]+"${ARCH[@]}"} "$@"; }
 
 # ---- Python 3.10+ ------------------------------------------------------------
+# yes/no question on the terminal (works under "curl ... | bash" too); no terminal = no
+ask() {
+  local a=""
+  [ -r /dev/tty ] || return 1
+  printf '%s [Y/n] ' "$1" > /dev/tty
+  read -r a < /dev/tty || return 1
+  case "$a" in ""|y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+}
+
+find_python() {
+  PY=""
+  # newest python.org install first, then Homebrew / other installs, then Apple's
+  local c CANDIDATES
+  CANDIDATES="$(ls -1d /Library/Frameworks/Python.framework/Versions/3.* 2>/dev/null | sort -t. -k2 -n -r | sed 's|$|/bin/python3|')"
+  CANDIDATES="$CANDIDATES /opt/homebrew/bin/python3 /usr/local/bin/python3"
+  # /usr/bin/python3 is a stub that pops up an install dialog unless the Command Line Tools exist
+  xcode-select -p >/dev/null 2>&1 && CANDIDATES="$CANDIDATES /usr/bin/python3"
+  for c in $CANDIDATES; do
+    if [ -x "$c" ] && as_user "$c" -c 'import sys, venv; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+      PY="$c"; return 0
+    fi
+  done
+  return 1
+}
+
+# python.org's installer, framework only: no /usr/local/bin/python3 links, no PATH or shell
+# profile changes, no IDLE / Python Launcher apps. Nothing that runs "python3" changes.
+install_python() {
+  local tmp mm c
+  tmp="$(mktemp -d /tmp/t10link-python.XXXXXX)"
+  say "Downloading Python $PY_PKG_VER from python.org"
+  curl -fL --retry 3 --progress-bar -o "$tmp/python.pkg" "$PY_PKG_URL" || fail "download failed: $PY_PKG_URL"
+  echo "$PY_PKG_SHA256  $tmp/python.pkg" | shasum -a 256 -c - >/dev/null 2>&1 \
+    || fail "the downloaded Python installer doesn't match its known checksum - not installing it"
+  pkgutil --check-signature "$tmp/python.pkg" 2>/dev/null | grep -q "Python Software Foundation" \
+    || fail "the downloaded Python installer isn't signed by the Python Software Foundation - not installing it"
+  mm="${PY_PKG_VER%.*}"
+  {
+    echo '<?xml version="1.0" encoding="UTF-8"?>'
+    echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+    echo '<plist version="1.0"><array>'
+    for c in PythonApplications PythonUnixTools PythonDocumentation PythonProfileChanges PythonInstallPip PythonTFramework; do
+      echo "<dict><key>attributeSetting</key><integer>0</integer><key>choiceAttribute</key><string>selected</string><key>choiceIdentifier</key><string>org.python.Python.$c-$mm</string></dict>"
+    done
+    echo '</array></plist>'
+  } > "$tmp/choices.xml"
+  say "Installing Python $PY_PKG_VER (framework only; the python3 command and PATH stay as they are)"
+  installer -pkg "$tmp/python.pkg" -applyChoiceChangesXML "$tmp/choices.xml" -target / >/dev/null \
+    || fail "the Python installer failed"
+  rm -rf "$tmp"
+}
+
 say "Checking Python"
-PY=""
-# newest python.org install first, then Homebrew / other installs, then Apple's
-CANDIDATES="$(ls -1d /Library/Frameworks/Python.framework/Versions/3.* 2>/dev/null | sort -t. -k2 -n -r | sed 's|$|/bin/python3|')"
-CANDIDATES="$CANDIDATES /opt/homebrew/bin/python3 /usr/local/bin/python3"
-# /usr/bin/python3 is a stub that pops up an install dialog unless the Command Line Tools exist
-xcode-select -p >/dev/null 2>&1 && CANDIDATES="$CANDIDATES /usr/bin/python3"
-for c in $CANDIDATES; do
-  if [ -x "$c" ] && as_user "$c" -c 'import sys, venv; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
-    PY="$c"; break
+if ! find_python; then
+  echo "    Python 3.10 or newer isn't installed (Apple's python3 is 3.9)."
+  if [ "$AUTO_PY" -eq 1 ] || ask "    Download and install Python $PY_PKG_VER from python.org now? It's installed framework-only and doesn't change the python3 command, so other apps aren't affected."; then
+    install_python
+    find_python || fail "Python $PY_PKG_VER was installed but doesn't run - see the messages above"
+  else
+    fail "Python 3.10 or newer is needed. Rerun with --install-python, or install it from https://www.python.org/downloads/macos/ and rerun."
   fi
-done
-[ -n "$PY" ] || fail "Python 3.10 or newer not found. Install it from https://www.python.org/downloads/macos/ (3.12 or newer), then rerun."
+fi
 # resolve the real binary (for the venv and the firewall)
 REAL_PY="$(as_user "$PY" -c 'import sys; print(sys.executable)')"
 echo "    $("$REAL_PY" --version) at $REAL_PY, $(uname -m)"
@@ -94,6 +155,11 @@ say "Installing T10Link ${NEW_VER} to $DEST${OLD_VER:+ (replacing $OLD_VER)}"
 mkdir -p "$DEST/logs"
 cp "$SRC/t10link_bridge.py" "$SRC/hap_local.py" "$SRC/t10link_web.py" "$DEST/"
 cp "$HERE/t10link" "$HERE/uninstall.sh" "$DEST/"
+# the Blueprint profile, for the web page's download link
+rm -rf "$DEST/profile"
+if [ -d "$HERE/../profile/blueprint-import" ]; then
+  mkdir -p "$DEST/profile" && cp -R "$HERE/../profile/blueprint-import/." "$DEST/profile/"
+fi
 if [ -f "$DEST/config.json" ]; then
   echo "    keeping existing config.json"
 else
@@ -224,17 +290,33 @@ if [ "$ok" -ne 1 ]; then
 fi
 
 IP="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo '<this Mac'"'"'s IP>')"
+WEB_PORT="$(sed -n 's/.*"web_port": *\([0-9]*\).*/\1/p' "$DEST/config.json" | head -1)"
+WEB_PORT="${WEB_PORT:-2401}"
+URL="http://$IP:$WEB_PORT"
 say "Installed and running"
 cat <<EOF
 
     Bridge version:  $NEW_VER
+    Web page:        $URL
     Savant profile:  Device IP Address $IP, port $TCP_PORT
-    Config:          $DEST/config.json   (then: sudo t10link restart)
-    Web page:        http://$IP:$(sed -n 's/.*"web_port": *\([0-9]*\).*/\1/p' "$DEST/config.json" | head -1 | grep . || echo 2401)   (status, pairing, adding thermostats)
-    Control:         t10link status | states | logs | pair | dump | sudo t10link restart
+    Control:         t10link status | states | logs | sudo t10link restart
     Remove:          sudo $DEST/uninstall.sh
 
 EOF
-NEXT=1
-grep -q '"192.168.1.50"' "$DEST/config.json" && { echo "  $NEXT. Edit $DEST/config.json: each thermostat's ip under "thermostats" (and allowed_clients if Savant runs on another machine)."; NEXT=$((NEXT+1)); }
-[ -f "$DEST/pairing.json" ] || echo "  $NEXT. t10link pair   (on the thermostat: Menu > Connect HomeKit shows the code; repeat for each thermostat)"
+if [ "$WEB_PORT" != "0" ] && ! ls "$DEST"/pairing*.json >/dev/null 2>&1; then
+  cat <<EOF
+  Next, on the web page ($URL, from any computer or phone on this network):
+    1. Reserve each thermostat's IP address in the router (DHCP reservation).
+    2. Search the network, add the thermostat, and pair it with the code from
+       Menu > Connect HomeKit on the thermostat.
+    3. Download the Blueprint profile there and import it: Device IP Address $IP, port $TCP_PORT.
+
+EOF
+fi
+# open the page when someone is at this Mac: a local Terminal session (who -m shows "(host)" for
+# ssh, and sudo drops SSH_CONNECTION) of the user logged in at the screen
+if [ "$OPEN_PAGE" -eq 1 ] && [ "$WEB_PORT" != "0" ] && [ -r /dev/tty ] \
+   && WHO="$(who -m < /dev/tty 2>/dev/null)" && [ -n "$WHO" ] && ! printf '%s' "$WHO" | grep -q '(' \
+   && [ "$(stat -f %Su /dev/console 2>/dev/null)" = "$RUN_USER" ]; then
+  sudo -u "$RUN_USER" open "http://localhost:$WEB_PORT" >/dev/null 2>&1 || true
+fi

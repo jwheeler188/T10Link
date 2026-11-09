@@ -131,6 +131,86 @@ def query_hap_record(ip: str, tries=8, timeout=2.0) -> dict | None:
     return None
 
 
+def local_ipv4s() -> list:
+    """This machine's LAN IPv4 address(es), from the routing table (no packets are sent)."""
+    out = []
+    for target in ("192.0.2.1", "10.255.255.254", "172.31.255.254", "192.168.255.254"):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect((target, 9))
+                ip = s.getsockname()[0]
+        except OSError:
+            continue
+        if ip not in out and not ip.startswith(("127.", "0.")):
+            out.append(ip)
+    return out
+
+
+def scan_hap(hosts, rounds=4, wait=1.5) -> list:
+    """Unicast-query port 5353 of every host for a HomeKit record (T10s don't answer multicast
+    queries reliably). Several rounds, because a thermostat's Wi-Fi sleeps. -> [record]"""
+    import time
+    pkt = hap_query_packet()
+    found = {}
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        for _ in range(rounds):
+            # non-blocking: packets queued for hosts with no ARP answer yet fill the send buffer,
+            # and a blocking send would then wait seconds for each of them
+            s.setblocking(False)
+            for i, h in enumerate(hosts):
+                if h in found:
+                    continue
+                try:
+                    s.sendto(pkt, (h, 5353))
+                except OSError:
+                    pass                        # no ARP answer yet, or a full send buffer
+                if i % 32 == 31:
+                    time.sleep(0.005)
+            end = time.monotonic() + wait
+            while True:
+                left = end - time.monotonic()
+                if left <= 0:
+                    break
+                s.settimeout(left)
+                try:
+                    data, src = s.recvfrom(9000)
+                except socket.timeout:
+                    break
+                except OSError:
+                    continue
+                if src[0] in found:
+                    continue
+                try:
+                    rec = hap_record_from_answers(parse_mdns(data), src[0])
+                except Exception:
+                    continue
+                if rec:
+                    found[src[0]] = rec
+    return list(found.values())
+
+
+def mac_address(ip: str) -> str:
+    """The MAC address this machine has learned for ip (after talking to it), or ""."""
+    try:
+        with open("/proc/net/arp") as f:                       # Linux
+            for line in f.read().splitlines()[1:]:
+                parts = line.split()
+                if len(parts) >= 4 and parts[0] == ip and parts[3] != "00:00:00:00:00:00":
+                    return parts[3].lower()
+        return ""
+    except OSError:
+        pass
+    try:                                                       # macOS
+        import subprocess
+        out = subprocess.run(["/usr/sbin/arp", "-n", ip], capture_output=True, text=True, timeout=3).stdout
+        m = re.search(r" at ([0-9a-fA-F:]+) ", out)
+        if m:
+            return ":".join(p.zfill(2) for p in m.group(1).lower().split(":"))
+    except Exception:
+        pass
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # pairing data (pairing.json, readable by the service user only)
 # ---------------------------------------------------------------------------

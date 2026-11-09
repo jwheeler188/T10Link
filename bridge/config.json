@@ -1,11 +1,11 @@
 {
-  "_readme": "T10Link bridge settings. After editing: t10link restart",
-  "_thermostats": "One entry per thermostat. Its position in this list (1, 2, 3 ...) is its ThermostatAddress in Blueprint's HVAC data table. Add more like this: [{\"ip\": \"192.168.1.50\"}, {\"ip\": \"192.168.1.51\"}]",
+  "_readme": "T10Link bridge settings. Most setup is on the web page: http://<this machine>:2401. After editing this file by hand: t10link restart",
+  "_thermostats": "One entry per thermostat; the web page (port web_port) adds, names and removes them. Its position in this list (1, 2, 3 ...) is its ThermostatAddress in Blueprint. By hand: [{\"ip\": \"192.168.1.50\", \"name\": \"Living Room\"}, {\"ip\": \"192.168.1.51\"}]",
   "tcp_port": 2400,
-  "thermostats": [
-    {"ip": "192.168.1.50", "name": "", "port": 80, "sensor_order": []}
+  "thermostats": [],
+  "allowed_clients": [
+    "auto"
   ],
-  "allowed_clients": ["auto"],
   "web_port": 2401,
   "web_clients": "lan",
   "web_password": "",

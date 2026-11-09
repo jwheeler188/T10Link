@@ -1,4 +1,4 @@
-# T10Link states (v1.3.1)
+# T10Link states (v1.4.0)
 
 Every state the bridge sends. Temperatures are in the thermostat's display units (`T_UNITS`).
 

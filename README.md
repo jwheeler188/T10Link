@@ -12,7 +12,8 @@ Savant host  --TCP 2400-->  T10Link bridge (Mac, Raspberry Pi or Linux)  --HomeK
   humidity, heating / cooling state, the dual-setpoint view in Auto.
 - Several thermostats on one bridge and one Blueprint component: one HVAC data table row each
   (up to 8; 16 with a regenerated profile).
-- A web page on the bridge for status, pairing and adding thermostats.
+- A web page on the bridge for setup and service: finds thermostats on the network, pairs, names,
+  re-addresses, unpairs and removes them, and hands out the Blueprint profile.
 - Works with Savant's climate scheduler.
 - RedLINK room sensors (temperature, humidity, motion), occupancy and filter reminders as states for
   triggers and custom screens.
@@ -23,20 +24,28 @@ Tested on a T10 Pro, firmware 1.5.3, with a RedLINK room sensor, Savant Pro 11.
 
 ## Install
 
-1. Download `T10Link-<version>.zip` from [Releases](../../releases) and unzip it on the machine that
-   will run the bridge (it needs Python 3.10+):
-   - **Mac** (the Savant host is fine): install Python 3.12+ from
-     [python.org](https://www.python.org/downloads/macos/), then `sudo ./macos/install.sh`
-   - **Raspberry Pi OS** (Bookworm+, 32- or 64-bit) or other Linux with systemd: `sh linux/install.sh`
-2. List the thermostats in `config.json` (`"thermostats": [{"ip": "192.168.1.50"}, ...]`), and if
-   the bridge isn't on the Savant host, add the Savant host's IP to `allowed_clients`. Then
-   `t10link restart`.
-3. On each thermostat open **Menu > Connect HomeKit**, then type the code on the bridge's web page
-   (`http://<bridge IP>:2401`) or run `t10link pair`.
-   (A thermostat must not already be in Apple Home.)
-4. In Blueprint, import `profile/blueprint-import/honeywell_t10link.xml` (with the `.htm` and
-   `.icns` beside it), add one component, point it at the bridge's IP on port 2400 and add one HVAC
-   data table row per thermostat (Zone, ThermostatAddress 1, 2, 3 ..., Heat / Cool / Auto).
+1. On the machine that will run the bridge (a Mac, including the Savant host, or a Raspberry Pi /
+   Linux box), run:
+
+   ```
+   curl -fsSL https://raw.githubusercontent.com/jwheeler188/T10Link/main/get.sh | bash
+   ```
+
+   It downloads the latest release, checks it, and installs the service. On a Mac without Python
+   3.10+ it offers to install Python from python.org, framework only, so the `python3` that Savant
+   and other apps use doesn't change. (Or download the zip from [Releases](../../releases) and run
+   `./install.sh`.)
+2. Open the web page it prints, `http://<bridge IP>:2401`, and:
+   - give each thermostat a **DHCP reservation** in your router (the page's search shows its IP and
+     MAC),
+   - **Search the network**, add the thermostat, and **Pair** it with the code from
+     **Menu > Connect HomeKit** on the thermostat. (It must not already be in Apple Home.)
+3. Download the Blueprint profile from the same page and import it. Add one component pointing at
+   the bridge's IP, port 2400, and one HVAC data table row per thermostat (Zone,
+   ThermostatAddress 1, 2, 3 ..., Heat / Cool / Auto). If the bridge isn't on the Savant host,
+   press **Allow** on the web page when Savant first connects.
+
+The same web page unpairs, removes and re-addresses thermostats later.
 
 The full manual is [MANUAL.md](MANUAL.md), also in the profile's Documentation tab in Blueprint.
 Every state is listed in [STATES.md](STATES.md).

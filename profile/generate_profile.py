@@ -74,16 +74,17 @@ def head(model, sensors, thermostats):
         A BRIDGE IS REQUIRED
         This profile talks to the T10Link bridge, a small service that is paired with the thermostat over HomeKit.
         It runs on the Savant host Mac itself, another Mac, a Raspberry Pi or any Linux box on the same network.
-        If the bridge is NOT on the Savant host, add the Savant host's IP to allowed_clients in the bridge's
-        config.json, or the bridge refuses Savant's connection.
+        If the bridge is NOT on the Savant host, it refuses Savant's first connection: press Allow on the
+        bridge's web page (or add the Savant host's IP to allowed_clients in the bridge's config.json).
 
         SETUP
-        1. Install the bridge, list the thermostats in its config.json and pair each one once:  t10link pair
-           (Menu > Connect HomeKit on the thermostat shows the code; it changes each time that screen opens).
-           A thermostat must not already be in Apple Home. Or pair on the bridge's web page: http://(bridge IP):2401
+        1. Install the bridge (one command, see the Documentation tab), then on its web page, http://(bridge IP):2401:
+           give each thermostat a DHCP reservation in the router, Search the network, Add it and Pair it with the
+           code from Menu > Connect HomeKit on the thermostat (it changes each time that screen opens).
+           A thermostat must not already be in Apple Home. The same page unpairs, removes and re-addresses them.
         2. Ethernet: set Device IP Address to the machine running the bridge. Port {PORT}.
         3. HVAC data table: one row per thermostat, all on this one component. Entity = Zone,
-           ThermostatAddress [1] = the thermostat's position in config.json (1, 2, 3 ...).
+           ThermostatAddress [1] = the thermostat's number on the bridge's web page (1, 2, 3 ...).
            Tick Heat, Cool and Auto as the system supports. Leave Fan unticked: HomeKit doesn't expose fan mode.
         4. Upload the configuration.
 
@@ -113,6 +114,7 @@ def head(model, sensors, thermostats):
         Thermostat state is only ever set from what the thermostat reports, never assumed from a button press.
 
         ====================== Change Log ==================
+        Version: 1.4.0 Change: Bridge 1.4.0: one-command install, and the web page now finds thermostats on the network (with the MAC address for the router's DHCP reservation), unpairs, removes any thermostat, changes a thermostat's IP, lets a refused Savant host connect, and offers this profile for download. Profile unchanged apart from these notes.
         Version: 1.3.1 Change: Thermostat names: T_NAME is the name set in the bridge's config.json or web page (Rename); the thermostat's own HomeKit name is the new T_HOMEKIT_NAME. Needs bridge 1.3.1.
         Version: 1.3.0 Change: Bridge web page (port 2401) for status, pairing and adding thermostats. Several thermostats on one bridge and one component: one HVAC data table row per thermostat (ThermostatAddress 1, 2, 3 ...). HVAC actions now send the ThermostatAddress; the custom actions take an optional Thermostat argument (blank = 1). New states T_IP, T_PAIRED, T_SENSOR_COUNT, SYS_THERMOSTAT_COUNT. Needs bridge 1.3.0; existing single-thermostat setups keep every state name.
         Version: 1.2.0 Change: The bridge now installs on macOS (including the Savant host) as well as Linux / Raspberry Pi (32- and 64-bit). Profile unchanged apart from these notes.
@@ -209,7 +211,7 @@ def action(name, parts, args=(), schedules=(), comment="", delay=None):
             </action>"""
 
 
-ADDR = [("ThermostatAddress", "Thermostat number: its position in the bridge's config.json (1, 2, 3 ...)"),
+ADDR = [("ThermostatAddress", "Thermostat number, as on the bridge's web page (1, 2, 3 ...)"),
         ("ThermostatAddress2", "not used")]
 
 
@@ -251,7 +253,7 @@ def hvac_resource(thermostats):
         </resource_component_actions>""")
 
 
-TSTAT = ("Thermostat", "Thermostat number (1, 2, 3 ... as in the bridge's config.json). Blank = 1")
+TSTAT = ("Thermostat", "Thermostat number (1, 2, 3 ... as on the bridge's web page). Blank = 1")
 
 
 def custom_actions():

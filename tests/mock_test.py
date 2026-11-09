@@ -165,7 +165,8 @@ def unit_tests():
 # ---------------------------------------------------------------------------
 async def protocol_tests():
     tmp = Path(tempfile.mkdtemp())
-    cfg = dict(b.DEFAULT_CONFIG, tcp_port=0, poll_seconds=15, confirm_seconds=6, allowed_clients="auto")
+    cfg = dict(b.DEFAULT_CONFIG, tcp_port=0, poll_seconds=15, confirm_seconds=6, allowed_clients="auto",
+               thermostat_ip="192.168.1.50")
     bridge = b.Bridge(cfg, tmp)
     t1 = bridge.thermostats[0]
     check("1.2 config (thermostat_ip): one thermostat at that ip", len(bridge.thermostats) == 1 and t1.ip == cfg["thermostat_ip"])
@@ -405,7 +406,7 @@ async def multi_protocol_tests():
           and st.get("SYS_THERMOSTAT_COUNT") == "3" and st.get("SYS_SENSOR_COUNT") == "2", st.get("SYS_SENSOR_COUNT"))
     check("unpaired thermostat 3: T3_PAIRED=0, SYS_PAIRED=0, SYS_ONLINE=0, error names it",
           st.get("T3_PAIRED") == "0" and st.get("T_PAIRED") == "1" and st.get("SYS_PAIRED") == "0" and st.get("SYS_ONLINE") == "0"
-          and "thermostat 3: not paired: run  t10link pair 3" in st.get("SYS_ERROR", ""), st.get("SYS_ERROR"))
+          and "thermostat 3: not paired: pair it on the T10Link web page (or t10link pair 3)" in st.get("SYS_ERROR", ""), st.get("SYS_ERROR"))
     check("no states for addresses 4+", not any(k.startswith(("T4_", "ThermostatMode_4")) for k in st))
 
     n1 = len(f1.writes)
@@ -611,8 +612,6 @@ async def web_tests():
               code == 400 and b"already paired to another HomeKit controller" in body and not (tmp / "pairing-3.json").exists(), body)
     finally:
         b.hap_local.query_hap_record, b.hap_local.pair = real_q, real_pair
-    code, _, body = await http(port, "POST", "/api/remove", {"n": 2}, J)
-    check("web: remove refuses a paired / not-last thermostat", code == 400 and len(bridge.thermostats) == 3, body)
     code, _, body = await http(port, "POST", "/api/remove", {"n": 3}, J)
     check("web: remove the last, unpaired thermostat",
           code == 200 and len(bridge.thermostats) == 2 and len(json.loads((tmp / "config.json").read_text())["thermostats"]) == 2
@@ -670,6 +669,203 @@ async def web_tests():
     srv2.close()
 
 
+async def service_tests():
+    """1.4: start with no thermostats, unpair / remove any / change IP / allow Savant / search."""
+    import t10link_web as web
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "config.json").write_text(json.dumps({"tcp_port": 2400, "thermostats": [], "allowed_clients": "auto"}))
+    cfg = b.load_config(tmp / "config.json")
+    cfg.update(tcp_port=0, confirm_seconds=6)
+    bridge = b.Bridge(cfg, tmp, tmp / "config.json")
+    check("fresh install: no placeholder thermostat", bridge.thermostats == [])
+    real = (b.Thermostat.connect, b.remove_remote_pairing, b.hap_local.scan_hap, b.hap_local.local_ipv4s, b.hap_local.mac_address)
+
+    async def fake_connect(self):
+        if not self.pairing_path.exists():
+            await self.publish({"SYS_PAIRED": 0, "SYS_ERROR": "not paired"})
+            return False
+        self.pairing = FakeT10(ACCS)
+        self.pairing.dispatcher_connect(self.on_event)
+        self.model = b.Model(await self.pairing.list_accessories_and_characteristics())
+        await self.publish({"SYS_PAIRED": 1, "SYS_LIVE": 1})
+        await self.set_online(True)
+        await self.read_all()
+        return True
+    calls, answer = [], {"err": ""}
+
+    async def fake_remove(path, ip, port):
+        calls.append((path.name, ip))
+        return answer["err"]
+    b.Thermostat.connect = fake_connect
+    b.remove_remote_pairing = fake_remove
+    try:
+        await bridge.start()
+        page = web.WebPage(bridge)
+        srv = await asyncio.start_server(page.handle, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        J = {"Content-Type": "application/json", "X-T10Link": "1"}
+        st = json.loads((await http(port, "GET", "/api/status"))[2])
+        check("no thermostats: page status empty, SYS_ERROR points to the web page, SYS_ONLINE 0",
+              st["thermostats"] == [] and "web page" in bridge.values.get("SYS_ERROR", "")
+              and bridge.values.get("SYS_ONLINE") == "0" and bridge.values.get("SYS_THERMOSTAT_COUNT") == "0", bridge.values)
+
+        class W:
+            out = b""
+
+            def write(self, d):
+                W.out += d
+
+            async def drain(self):
+                pass
+        await bridge.handle_line("SETHEAT 70", W())
+        await bridge.handle_line("PING", W())
+        check("no thermostats: a command gets an error, PING still answers", b"no thermostats configured" in W.out and b"PONG" in W.out, W.out)
+
+        for i in range(1, 5):
+            await http(port, "POST", "/api/add", {"ip": f"192.168.1.5{i}", "name": f"Zone {i}"}, J)
+        for n in (1, 2, 3):
+            b.hap_local.write_private_json(b.file_for(tmp, "pairing", n), {"iOSPairingId": "t", "AccessoryPairingID": f"AA:0{n}"})
+        b.file_for(tmp, "sensors", 3).write_text('{"s3": 1}')
+        b.file_for(tmp, "setpoints", 4).write_text('{"heat": 64}')
+        bridge.wake_all()
+        await asyncio.sleep(0.5)
+        check("4 thermostats added, 1-3 connected", len(bridge.thermostats) == 4 and
+              [t.online for t in bridge.thermostats] == [True, True, True, False])
+
+        code, _, body = await http(port, "POST", "/api/unpair", {"n": 2}, J)
+        await asyncio.sleep(0.2)
+        check("unpair 2: thermostat asked to forget the bridge, keys deleted, still in the list",
+              code == 200 and calls[-1] == ("pairing-2.json", "192.168.1.52") and not b.file_for(tmp, "pairing", 2).exists()
+              and len(bridge.thermostats) == 4 and bridge.values.get("T2_PAIRED") == "0"
+              and not bridge.thermostats[1].online and bridge.values.get("SYS_PAIRED") == "0", body)
+        code, _, body = await http(port, "POST", "/api/unpair", {"n": 2}, J)
+        check("unpair a thermostat that isn't paired: refused", code == 400 and b"not paired" in body)
+
+        answer["err"] = "TimeoutError"
+        code, _, body = await http(port, "POST", "/api/unpair", {"n": 1}, J)
+        r = json.loads(body)
+        await asyncio.sleep(0.3)
+        check("unpair, thermostat not answering: nothing changed, page offered force, it reconnects",
+              code == 400 and r.get("unreachable") is True and b.file_for(tmp, "pairing", 1).exists()
+              and bridge.thermostats[0].online, r)
+        code, _, body = await http(port, "POST", "/api/unpair", {"n": 1, "force": True}, J)
+        check("unpair with force: keys deleted, message says HomeKit Reset",
+              code == 200 and not b.file_for(tmp, "pairing", 1).exists() and b"HomeKit Reset" in body, body)
+        answer["err"] = ""
+
+        code, _, body = await http(port, "POST", "/api/remove", {"n": 2}, J)
+        await asyncio.sleep(0.4)
+        raw = json.loads((tmp / "config.json").read_text())
+        check("remove 2 of 4: later ones move up, config.json updated",
+              code == 200 and [t["ip"] for t in raw["thermostats"]] == ["192.168.1.51", "192.168.1.53", "192.168.1.54"]
+              and [t.ip for t in bridge.thermostats] == ["192.168.1.51", "192.168.1.53", "192.168.1.54"]
+              and [t.n for t in bridge.thermostats] == [1, 2, 3], body)
+        check("remove: message tells you to fix ThermostatAddress in Blueprint", b"ThermostatAddress" in body and b"3-4 are now 2-3" in body, body)
+        check("remove: files moved with them (pairing-3 -> 2, sensors-3 -> 2, setpoints-4 -> 3)",
+              json.loads(b.file_for(tmp, "pairing", 2).read_text()).get("AccessoryPairingID") == "AA:03"
+              and b.file_for(tmp, "sensors", 2).read_text() == '{"s3": 1}' and not b.file_for(tmp, "sensors", 3).exists()
+              and json.loads(b.file_for(tmp, "setpoints", 3).read_text()) == {"heat": 64} and not b.file_for(tmp, "pairing", 3).exists())
+        check("remove: states renumbered, address 4 blanked",
+              bridge.values.get("T2_IP") == "192.168.1.53" and bridge.values.get("T2_NAME") == "Zone 3"
+              and bridge.values.get("T3_IP") == "192.168.1.54" and bridge.values.get("T4_IP") == ""
+              and bridge.values.get("T4_ONLINE") == "0" and bridge.values.get("SYS_THERMOSTAT_COUNT") == "3"
+              and bridge.thermostats[1].online and bridge.values.get("ThermostatMode_2") == "Cool", bridge.values.get("T4_IP"))
+        check("remove: each thermostat's loop is its own", sorted(bridge.loops) == [1, 2, 3]
+              and all(not task.done() for task in bridge.loops.values()))
+
+        answer["err"] = "OSError: no route"
+        code, _, body = await http(port, "POST", "/api/remove", {"n": 2}, J)
+        check("remove a paired thermostat that doesn't answer: refused, offered force", code == 400
+              and json.loads(body).get("unreachable") and len(bridge.thermostats) == 3)
+        code, _, body = await http(port, "POST", "/api/remove", {"n": 2, "force": True}, J)
+        check("remove with force", code == 200 and len(bridge.thermostats) == 2 and not b.file_for(tmp, "pairing", 2).exists()
+              and bridge.thermostats[1].ip == "192.168.1.54", body)
+        answer["err"] = ""
+
+        code, _, body = await http(port, "POST", "/api/ip", {"n": 2, "ip": "192.168.1.51"}, J)
+        check("change IP to another thermostat's: refused", code == 400 and b"already thermostat 1" in body)
+        b.hap_local.write_private_json(b.file_for(tmp, "pairing", 2), {"iOSPairingId": "t", "AccessoryPairingID": "AA:04"})
+        code, _, body = await http(port, "POST", "/api/ip", {"n": 2, "ip": "192.168.1.60"}, J)
+        await asyncio.sleep(0.3)
+        check("change IP: saved, T2_IP, reconnects with the same pairing",
+              code == 200 and json.loads((tmp / "config.json").read_text())["thermostats"][1]["ip"] == "192.168.1.60"
+              and bridge.values.get("T2_IP") == "192.168.1.60" and bridge.thermostats[1].online, body)
+
+        bridge.rejected = ("192.168.1.20", "now")
+        st = json.loads((await http(port, "GET", "/api/status"))[2])
+        code, _, body = await http(port, "POST", "/api/allow", {"ip": "192.168.1.20"}, J)
+        st2 = json.loads((await http(port, "GET", "/api/status"))[2])
+        check("refused Savant host: shown, Allow adds it to allowed_clients",
+              st["rejected"] == "192.168.1.20" and code == 200 and st2["rejected"] == ""
+              and json.loads((tmp / "config.json").read_text())["allowed_clients"] == ["auto", "192.168.1.20"]
+              and bridge.client_allowed("192.168.1.20"), (st["rejected"], body))
+
+        b.hap_local.local_ipv4s = lambda: ["192.168.1.10"]
+        b.hap_local.mac_address = lambda ip: "48:a2:e6:00:00:" + ip.split(".")[-1]
+        seen_hosts = []
+
+        def fake_scan(hosts, rounds=4, wait=1.5):
+            seen_hosts.extend(hosts)
+            return [{"address": "192.168.1.51", "name": "TSTAT-1", "md": "T9/T10 (+)", "ci": "2", "sf": "1", "id": "AA:01"},
+                    {"address": "192.168.1.70", "name": "TSTAT-4", "md": "T9/T10 (+)", "ci": "2", "sf": "0", "id": "aa:04"},
+                    {"address": "192.168.1.71", "name": "TSTAT-5", "md": "T9/T10 (+)", "ci": "2", "sf": "1", "id": "AA:05"},
+                    {"address": "192.168.1.72", "name": "TSTAT-6", "md": "T9/T10 (+)", "ci": "2", "sf": "0", "id": "AA:06"},
+                    {"address": "192.168.1.9", "name": "Smart Bridge Pro 2", "md": "Smart Bridge Pro 2", "ci": "2", "sf": "1"}]
+        b.hap_local.scan_hap = fake_scan
+        real_plat, real_after = b.sys.platform, b.MAC_RESCAN_AFTER
+        b.sys.platform, b.MAC_RESCAN_AFTER = "linux", 0
+        code, _, body = await http(port, "POST", "/api/scan", {}, J)
+        r = json.loads(body)
+        f = {h["ip"]: h for h in r.get("found", [])}
+        check("search: thermostats only, sorted, with MAC", code == 200 and list(f) == ["192.168.1.51", "192.168.1.70", "192.168.1.71", "192.168.1.72"]
+              and f["192.168.1.71"]["mac"] == "48:a2:e6:00:00:71" and len(seen_hosts) == 254, r)
+        check("search: configured one marked, moved one recognised by its pairing, other controller flagged",
+              f["192.168.1.51"]["thermostat"] == 1 and f["192.168.1.70"]["moved"] == 2 and not f["192.168.1.70"]["paired_elsewhere"]
+              and f["192.168.1.72"]["paired_elsewhere"] and not f["192.168.1.71"]["paired_elsewhere"] and f["192.168.1.71"]["moved"] is None, f)
+        # macOS: a thermostat asleep during the first pass (host marked down) is found by the second
+        calls = []
+
+        def sleepy_scan(hosts, rounds=4, wait=1.5):
+            calls.append(len(hosts))
+            if len(calls) == 1:
+                return [{"address": "192.168.1.9", "name": "Smart Bridge Pro 2", "md": "Smart Bridge Pro 2", "ci": "2", "sf": "1"}]
+            return [{"address": "192.168.1.9", "name": "Smart Bridge Pro 2", "md": "Smart Bridge Pro 2", "ci": "2", "sf": "1"},
+                    {"address": "192.168.1.51", "name": "TSTAT-1", "md": "T9/T10 (+)", "ci": "2", "sf": "1", "id": "AA:01"}]
+        b.hap_local.scan_hap = sleepy_scan
+        b.sys.platform = "darwin"
+        code, _, body = await http(port, "POST", "/api/scan", {}, J)
+        r = json.loads(body)
+        check("search on macOS: second pass finds a sleeping thermostat, skips hosts already found",
+              code == 200 and [h["ip"] for h in r.get("found", [])] == ["192.168.1.51"] and calls == [254, 253], (calls, r))
+        calls.clear()
+        b.sys.platform = "linux"
+        await http(port, "POST", "/api/scan", {}, J)
+        check("search on Linux: one pass", calls == [254], calls)
+        b.sys.platform, b.MAC_RESCAN_AFTER = real_plat, real_after
+        code, _, _ = await http(port, "POST", "/api/scan", {}, {"Content-Type": "application/json"})
+        check("search needs the X-T10Link header", code == 403)
+
+        code, head, body = await http(port, "GET", "/profile.zip")
+        import zipfile
+        import io
+        names = zipfile.ZipFile(io.BytesIO(body)).namelist() if code == 200 else []
+        check("profile.zip: the Blueprint import folder", code == 200 and "application/zip" in head
+              and "T10Link Blueprint profile/honeywell_t10link.xml" in names and "T10Link Blueprint profile/honeywell_t10link.htm" in names, names)
+
+        for _ in range(2):
+            await http(port, "POST", "/api/remove", {"n": 1, "force": True}, J)
+        raw = json.loads((tmp / "config.json").read_text())
+        check("remove them all: empty list saved, reloads as no thermostats",
+              bridge.thermostats == [] and raw["thermostats"] == [] and b.Bridge(b.load_config(tmp / "config.json"), tmp).thermostats == []
+              and bridge.values.get("T_IP") == "" and bridge.values.get("SYS_THERMOSTAT_COUNT") == "0", raw)
+        bridge.request_stop("test")
+        for task in list(bridge.loops.values()):
+            task.cancel()
+        srv.close()
+    finally:
+        (b.Thermostat.connect, b.remove_remote_pairing, b.hap_local.scan_hap, b.hap_local.local_ipv4s, b.hap_local.mac_address) = real
+
+
 if __name__ == "__main__":
     unit_tests()
     asyncio.run(protocol_tests())
@@ -680,5 +876,7 @@ if __name__ == "__main__":
     profile_tests()
     print("\n-- web page")
     asyncio.run(web_tests())
+    print("\n-- servicing (1.4)")
+    asyncio.run(service_tests())
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     sys.exit(1 if FAIL else 0)

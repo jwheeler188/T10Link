@@ -1,7 +1,7 @@
 #!/bin/sh
 # T10Link installer for Linux: Raspberry Pi OS (32- or 64-bit), Debian 12 / 13, Ubuntu 22.04+.
 #
-#   sh linux/install.sh                 install or upgrade; the service runs as you
+#   sh linux/install.sh                 install or upgrade; the service runs as you (also with sudo)
 #   sh linux/install.sh --user NAME     run the service as another (existing) user
 #
 # Needs sudo, Python 3.10+ and internet access once (to download aiohomekit). Re-running upgrades
@@ -12,6 +12,8 @@ DEST=/opt/t10link
 UNIT=t10link-bridge
 AIOHOMEKIT=aiohomekit==4.0.1
 USER_NAME=${T10LINK_USER:-$(id -un)}
+# started with sudo: run the service as the user who ran sudo
+if [ "$USER_NAME" = root ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then USER_NAME=$SUDO_USER; fi
 while [ $# -gt 0 ]; do
   case "$1" in
     --user) USER_NAME="$2"; shift 2 ;;
@@ -64,6 +66,11 @@ sudo mkdir -p "$DEST"
 sudo chown "$USER_NAME" "$DEST"
 sudo chmod 700 "$DEST"          # pairing.json (HomeKit keys) lives here
 sudo install -m 644 -o "$USER_NAME" bridge/t10link_bridge.py bridge/hap_local.py bridge/t10link_web.py "$DEST/"
+# the Blueprint profile, for the web page's download link
+sudo rm -rf "$DEST/profile"
+if [ -d profile/blueprint-import ]; then
+  sudo mkdir -p "$DEST/profile" && sudo cp -R profile/blueprint-import/. "$DEST/profile/" && sudo chown -R "$USER_NAME" "$DEST/profile"
+fi
 if [ -f "$DEST/config.json" ]; then
   echo "    keeping existing config.json"
 else
@@ -116,17 +123,28 @@ done
 [ "$ok" = 1 ] || { journalctl -u "$UNIT" -n 20 --no-pager; fail "the service did not start - see the log above"; }
 
 IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+IP=${IP:-"<this machine's IP>"}
+WEB_PORT=$(sed -n 's/.*"web_port": *\([0-9]*\).*/\1/p' "$DEST/config.json" | head -1)
+WEB_PORT=${WEB_PORT:-2401}
 say "Installed and running"
 cat <<EOF
 
     Bridge version:  $NEW_VER
-    Savant profile:  Device IP Address ${IP:-<this machine's IP>}, port $PORT
-    Config:          $DEST/config.json   (then: t10link restart)
-    Web page:        http://${IP:-<this machine's IP>}:$(sed -n 's/.*"web_port": *\([0-9]*\).*/\1/p' "$DEST/config.json" | head -1 | grep . || echo 2401)   (status, pairing, adding thermostats)
-    Control:         t10link status | states | logs | restart | pair | dump
+    Web page:        http://$IP:$WEB_PORT
+    Savant profile:  Device IP Address $IP, port $PORT
+    Control:         t10link status | states | logs | restart
     Remove:          sudo $DEST/uninstall.sh
 
 EOF
-NEXT=1
-grep -q '"192.168.1.50"' "$DEST/config.json" && { echo "  $NEXT. Edit $DEST/config.json: each thermostat's ip under "thermostats", and add the Savant host to allowed_clients."; NEXT=$((NEXT+1)); }
-[ -f "$DEST/pairing.json" ] || echo "  $NEXT. t10link pair   (on the thermostat: Menu > Connect HomeKit shows the code; repeat for each thermostat)"
+if [ "$WEB_PORT" != 0 ] && ! sudo sh -c "ls '$DEST'/pairing*.json" >/dev/null 2>&1; then
+  cat <<EOF
+  Next, on the web page (http://$IP:$WEB_PORT, from any computer or phone on this network):
+    1. Reserve each thermostat's IP address in the router (DHCP reservation).
+    2. Search the network, add the thermostat, and pair it with the code from
+       Menu > Connect HomeKit on the thermostat.
+    3. Download the Blueprint profile there and import it: Device IP Address $IP, port $PORT.
+       Savant's first connection is refused until you press "Allow" on the web page (or add the
+       Savant host's IP to allowed_clients in $DEST/config.json).
+
+EOF
+fi
