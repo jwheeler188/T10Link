@@ -1,0 +1,143 @@
+#!/bin/bash
+# zsh is the macOS default shell: if started with "zsh file" or "sh file", relaunch in bash
+[ -n "${BASH_VERSION:-}" ] || exec /bin/bash "$0" "$@"
+# t10link - control the T10Link bridge (Honeywell T9/T10 HomeKit -> Savant) on macOS
+#
+#   t10link status            service state and the bridge's health states
+#   t10link states            every state the bridge is sending to Savant
+#   t10link logs [n]          follow the log (last n lines first, default 50; Ctrl-C to quit)
+#   t10link pair              one-time HomeKit pairing (type the code the thermostat shows)
+#   t10link unpair            remove this bridge's pairing from the thermostat
+#   t10link dump              every HomeKit service/characteristic the thermostat exposes
+#   t10link send <command>    send one command, e.g.  t10link send SETCOOL 74
+#   t10link version
+#   sudo t10link restart | start | stop
+#   sudo t10link uninstall    remove everything (add --keep-config to save settings and pairing first)
+set -uo pipefail
+
+LABEL="org.t10link.bridge"
+PLIST="/Library/LaunchDaemons/${LABEL}.plist"
+SELF="$0"; [ -L "$SELF" ] && SELF="$(readlink "$SELF")"
+DIR="$(cd "$(dirname "$SELF")" && pwd)"
+LOG="$DIR/logs/bridge.log"
+VPY="$DIR/venv/bin/python3"
+ARCH=()
+if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = "1" ]; then ARCH=(/usr/bin/arch -arm64); fi
+PY() { ${ARCH[@]+"${ARCH[@]}"} "$VPY" -I "$@"; }
+BR=("$DIR/t10link_bridge.py" -c "$DIR/config.json")
+
+RUN_USER="$(sed -n 's/^RUN_USER=//p' "$DIR/.install-manifest" 2>/dev/null | head -1)"
+RUN_USER="${RUN_USER:-$(id -un)}"
+PORT="$(sed -n 's/.*"tcp_port": *\([0-9]*\).*/\1/p' "$DIR/config.json" 2>/dev/null | head -1)"
+PORT="${PORT:-2400}"
+
+need_root() { [ "$(id -u)" -eq 0 ] || { echo "run with sudo: sudo t10link $1"; exit 1; }; }
+loaded()    { launchctl print "system/$LABEL" >/dev/null 2>&1; }
+pid()       { launchctl print "system/$LABEL" 2>/dev/null | awk '/^\tpid = /{print $3}'; }
+# run the bridge CLI as the service user, so pairing.json stays owned by (and private to) that user
+as_svc() {
+  if [ "$(id -un)" = "$RUN_USER" ]; then "$@"
+  elif [ "$(id -u)" -eq 0 ]; then sudo -u "$RUN_USER" -H "$@"
+  else echo "run as $RUN_USER (or with sudo)"; exit 1; fi
+}
+# launchctl bootout returns before launchd has finished unloading; bootstrapping too early fails
+# with "Bootstrap failed: 5: Input/output error", so wait for the unload and the port
+wait_gone() {
+  for _ in $(seq 1 30); do
+    if ! loaded && ! lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then return 0; fi
+    sleep 1
+  done
+  echo "warning: bridge still loaded or listening on $PORT after 30 s"
+}
+boot() {
+  launchctl enable "system/$LABEL" 2>/dev/null || true
+  for try in 1 2 3 4 5; do
+    launchctl bootstrap system "$PLIST" 2>/dev/null && return 0
+    [ "$try" -eq 5 ] && { launchctl bootstrap system "$PLIST"; return 1; }   # last try: show the error
+    sleep 2
+  done
+}
+
+talk() {  # talk <command> <seconds>: print what the bridge sends back
+  PY - "$PORT" "$1" "$2" <<'EOF'
+import socket, sys, time
+port, cmd, secs = int(sys.argv[1]), sys.argv[2], float(sys.argv[3])
+try:
+    s = socket.create_connection(("127.0.0.1", port), 3)
+except OSError as e:
+    sys.exit(f"bridge not answering on port {port}: {e}")
+s.settimeout(0.3)
+if cmd:
+    # skip the full state dump every new connection gets, then show only the reply
+    end = time.time() + 1.0
+    while time.time() < end:
+        try:
+            if not s.recv(65536):
+                break
+        except socket.timeout:
+            break
+    s.sendall(cmd.encode() + b"\n")
+buf, end = b"", time.time() + secs
+while time.time() < end:
+    try:
+        d = s.recv(65536)
+        if not d:
+            break
+        buf += d
+    except socket.timeout:
+        pass
+sys.stdout.write(buf.decode("ascii", "replace"))
+EOF
+}
+
+case "${1:-status}" in
+  status)
+    [ -f "$PLIST" ] || { echo "not installed"; exit 1; }
+    if loaded; then
+      p="$(pid)"
+      if [ -n "$p" ]; then
+        echo "running   pid $p   uptime $(ps -o etime= -p "$p" 2>/dev/null | tr -d ' ')   ($DIR)"
+      else
+        echo "loaded but not running (crashed or throttled - see: t10link logs)"
+      fi
+    else
+      echo "stopped"
+    fi
+    echo
+    talk "" 1.5 | grep -E '^(SYS_ONLINE|SYS_PAIRED|SYS_LIVE|SYS_ERROR|SYS_VERSION|SYS_LAST_UPDATE|SYS_LAST_COMMAND|T_NAME|T_FIRMWARE|T_MODE|T_STATE|T_TEMP|T_HEAT_SETPOINT|T_COOL_SETPOINT|T_HUMIDITY|T_FILTER1_CHANGE|T_FILTER2_CHANGE|T_ERROR|SENSOR[0-9]+_(NAME|TEMP))='
+    ;;
+  states)  talk "" 1.5 | sort ;;
+  logs)    tail -n "${2:-50}" -f "$LOG" ;;
+  pair)    as_svc "${ARCH[@]+"${ARCH[@]}"}" "$VPY" -I "${BR[@]}" --pair ;;
+  unpair)  as_svc "${ARCH[@]+"${ARCH[@]}"}" "$VPY" -I "${BR[@]}" --unpair && echo "now restart the bridge: sudo t10link restart" ;;
+  dump)    as_svc "${ARCH[@]+"${ARCH[@]}"}" "$VPY" -I "${BR[@]}" --dump ;;
+  send)    shift; talk "$*" 6 | grep -vE '^(SYS_LAST_UPDATE)=' ;;
+  version) PY "${BR[@]}" --version ;;
+  stop)
+    need_root stop
+    loaded || { echo "already stopped"; exit 0; }
+    launchctl bootout "system/$LABEL" && wait_gone && echo "stopped (starts again at boot, or: sudo t10link start)"
+    ;;
+  start)
+    need_root start
+    loaded && { echo "already running"; exit 0; }
+    boot && echo "started"
+    ;;
+  restart)
+    need_root restart
+    if loaded; then
+      # restart in place (SIGTERM, then launchd starts it again); no unload, so no bootstrap race
+      launchctl kickstart -k "system/$LABEL" && echo "restarted"
+    else
+      boot && echo "started"
+    fi
+    ;;
+  uninstall)
+    need_root uninstall
+    shift; exec "$DIR/uninstall.sh" "$@"
+    ;;
+  *)
+    sed -n '/^# t10link - /,/^set -uo/p' "$SELF" | grep '^#' | sed 's/^# \{0,1\}//'
+    exit 1
+    ;;
+esac

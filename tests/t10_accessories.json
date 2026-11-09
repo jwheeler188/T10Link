@@ -1,0 +1,751 @@
+[
+ {
+  "aid": 1,
+  "services": [
+   {
+    "iid": 1,
+    "type": "0000003E-0000-1000-8000-0026BB765291",
+    "primary": false,
+    "hidden": false,
+    "linked": [],
+    "characteristics": [
+     {
+      "iid": 2,
+      "type": "00000014-0000-1000-8000-0026BB765291",
+      "format": "bool",
+      "perms": [
+       "pw"
+      ]
+     },
+     {
+      "iid": 3,
+      "type": "00000020-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "Resideo Technologies, Inc.",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 4,
+      "type": "00000021-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "T9/T10 (+)",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 5,
+      "type": "00000023-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "TSTAT-ABC123",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 6,
+      "type": "00000030-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "10000000000001",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 7,
+      "type": "00000052-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "1.5.3",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 9,
+      "type": "34AB8811-AC7F-4340-BAC3-FD6A85F9943B",
+      "format": "string",
+      "value": "2.1;16B127",
+      "perms": [
+       "pr",
+       "hd"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 10,
+      "type": "000000A6-0000-1000-8000-0026BB765291",
+      "format": "uint32",
+      "value": 0,
+      "perms": [
+       "pr",
+       "ev"
+      ],
+      "ev": false,
+      "minValue": 0,
+      "maxValue": 1,
+      "minStep": 1
+     }
+    ]
+   },
+   {
+    "iid": 16,
+    "type": "000000A2-0000-1000-8000-0026BB765291",
+    "primary": false,
+    "hidden": false,
+    "linked": [],
+    "characteristics": [
+     {
+      "iid": 18,
+      "type": "00000037-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "1.1.0",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "aid": 2,
+  "services": [
+   {
+    "iid": 1,
+    "type": "0000003E-0000-1000-8000-0026BB765291",
+    "primary": false,
+    "hidden": false,
+    "linked": [],
+    "characteristics": [
+     {
+      "iid": 2,
+      "type": "00000014-0000-1000-8000-0026BB765291",
+      "format": "bool",
+      "perms": [
+       "pw"
+      ]
+     },
+     {
+      "iid": 3,
+      "type": "00000020-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "Resideo Technologies, Inc.",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 4,
+      "type": "00000021-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "T9/T10 (+)",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 5,
+      "type": "00000023-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "T10 Thermostat",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 6,
+      "type": "00000030-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "10000000000001",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 7,
+      "type": "00000052-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "1.5.3",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 9,
+      "type": "34AB8811-AC7F-4340-BAC3-FD6A85F9943B",
+      "format": "string",
+      "value": "2.1;16B127",
+      "perms": [
+       "pr",
+       "hd"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 10,
+      "type": "000000A6-0000-1000-8000-0026BB765291",
+      "format": "uint32",
+      "value": 0,
+      "perms": [
+       "pr",
+       "ev"
+      ],
+      "ev": false,
+      "minValue": 0,
+      "maxValue": 1,
+      "minStep": 1
+     }
+    ]
+   },
+   {
+    "iid": 32,
+    "type": "0000004A-0000-1000-8000-0026BB765291",
+    "primary": true,
+    "hidden": false,
+    "linked": [],
+    "characteristics": [
+     {
+      "iid": 35,
+      "type": "0000000F-0000-1000-8000-0026BB765291",
+      "format": "uint8",
+      "value": 0,
+      "perms": [
+       "pr",
+       "ev"
+      ],
+      "ev": false,
+      "minValue": 0,
+      "maxValue": 2,
+      "minStep": 1,
+      "valid-values": [
+       0,
+       1,
+       2
+      ]
+     },
+     {
+      "iid": 36,
+      "type": "00000033-0000-1000-8000-0026BB765291",
+      "format": "uint8",
+      "value": 2,
+      "perms": [
+       "pr",
+       "pw",
+       "ev"
+      ],
+      "ev": false,
+      "minValue": 0,
+      "maxValue": 3,
+      "minStep": 1,
+      "valid-values": [
+       0,
+       1,
+       2,
+       3
+      ]
+     },
+     {
+      "iid": 37,
+      "type": "00000011-0000-1000-8000-0026BB765291",
+      "format": "float",
+      "value": 22,
+      "perms": [
+       "pr",
+       "ev"
+      ],
+      "ev": false,
+      "unit": "celsius",
+      "minValue": 0,
+      "maxValue": 100,
+      "minStep": 0.5
+     },
+     {
+      "iid": 38,
+      "type": "00000035-0000-1000-8000-0026BB765291",
+      "format": "float",
+      "value": 22,
+      "perms": [
+       "pr",
+       "pw",
+       "ev"
+      ],
+      "ev": false,
+      "unit": "celsius",
+      "minValue": 10,
+      "maxValue": 32,
+      "minStep": 0.5
+     },
+     {
+      "iid": 39,
+      "type": "00000036-0000-1000-8000-0026BB765291",
+      "format": "uint8",
+      "value": 1,
+      "perms": [
+       "pr",
+       "pw",
+       "ev"
+      ],
+      "ev": false,
+      "minValue": 0,
+      "maxValue": 1,
+      "minStep": 1,
+      "valid-values": [
+       0,
+       1
+      ]
+     },
+     {
+      "iid": 40,
+      "type": "00000023-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "T10 Thermostat",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 41,
+      "type": "00000010-0000-1000-8000-0026BB765291",
+      "format": "float",
+      "value": 54,
+      "perms": [
+       "pr",
+       "ev"
+      ],
+      "ev": false,
+      "unit": "percentage",
+      "minValue": 0,
+      "maxValue": 100,
+      "minStep": 1
+     },
+     {
+      "iid": 43,
+      "type": "0000000D-0000-1000-8000-0026BB765291",
+      "format": "float",
+      "value": 22,
+      "perms": [
+       "pr",
+       "pw",
+       "ev"
+      ],
+      "ev": false,
+      "unit": "celsius",
+      "minValue": 10,
+      "maxValue": 32,
+      "minStep": 0.5
+     },
+     {
+      "iid": 44,
+      "type": "00000012-0000-1000-8000-0026BB765291",
+      "format": "float",
+      "value": 15.5,
+      "perms": [
+       "pr",
+       "pw",
+       "ev"
+      ],
+      "ev": false,
+      "unit": "celsius",
+      "minValue": 10,
+      "maxValue": 32,
+      "minStep": 0.5
+     },
+     {
+      "iid": 45,
+      "type": "DA2B20B8-6055-4742-B086-2C753CC9F215",
+      "format": "float",
+      "value": null,
+      "perms": [
+       "pr",
+       "pw",
+       "hd"
+      ],
+      "ev": false,
+      "unit": "celsius",
+      "minValue": 0,
+      "maxValue": 2.5,
+      "minStep": 0.5
+     }
+    ]
+   },
+   {
+    "iid": 96,
+    "type": "000000BA-0000-1000-8000-0026BB765291",
+    "primary": false,
+    "hidden": false,
+    "linked": [],
+    "characteristics": [
+     {
+      "iid": 99,
+      "type": "00000023-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "Filter 1",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 97,
+      "type": "000000AC-0000-1000-8000-0026BB765291",
+      "format": "uint8",
+      "value": 1,
+      "perms": [
+       "pr",
+       "ev"
+      ],
+      "ev": false,
+      "minValue": 0,
+      "maxValue": 1,
+      "minStep": 1,
+      "valid-values": [
+       0,
+       1
+      ]
+     },
+     {
+      "iid": 98,
+      "type": "000000AD-0000-1000-8000-0026BB765291",
+      "format": "uint8",
+      "perms": [
+       "pw"
+      ],
+      "minValue": 1,
+      "maxValue": 1,
+      "minStep": 1
+     }
+    ]
+   },
+   {
+    "iid": 112,
+    "type": "000000BA-0000-1000-8000-0026BB765291",
+    "primary": false,
+    "hidden": false,
+    "linked": [],
+    "characteristics": [
+     {
+      "iid": 115,
+      "type": "00000023-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "Filter 2",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 113,
+      "type": "000000AC-0000-1000-8000-0026BB765291",
+      "format": "uint8",
+      "value": 0,
+      "perms": [
+       "pr",
+       "ev"
+      ],
+      "ev": false,
+      "minValue": 0,
+      "maxValue": 1,
+      "minStep": 1,
+      "valid-values": [
+       0,
+       1
+      ]
+     },
+     {
+      "iid": 114,
+      "type": "000000AD-0000-1000-8000-0026BB765291",
+      "format": "uint8",
+      "perms": [
+       "pw"
+      ],
+      "minValue": 1,
+      "maxValue": 1,
+      "minStep": 1
+     }
+    ]
+   },
+   {
+    "iid": 128,
+    "type": "00000086-0000-1000-8000-0026BB765291",
+    "primary": false,
+    "hidden": false,
+    "linked": [],
+    "characteristics": [
+     {
+      "iid": 130,
+      "type": "00000023-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "Occupancy",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 129,
+      "type": "00000071-0000-1000-8000-0026BB765291",
+      "format": "uint8",
+      "value": 0,
+      "perms": [
+       "pr",
+       "ev"
+      ],
+      "ev": false,
+      "minValue": 0,
+      "maxValue": 1,
+      "minStep": 1,
+      "valid-values": [
+       0,
+       1
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "aid": 3,
+  "services": [
+   {
+    "iid": 1,
+    "type": "0000003E-0000-1000-8000-0026BB765291",
+    "primary": false,
+    "hidden": false,
+    "linked": [],
+    "characteristics": [
+     {
+      "iid": 2,
+      "type": "00000014-0000-1000-8000-0026BB765291",
+      "format": "bool",
+      "perms": [
+       "pw"
+      ]
+     },
+     {
+      "iid": 3,
+      "type": "00000020-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "Resideo Technologies, Inc.",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 4,
+      "type": "00000021-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "0000000000000000000000000000000000000000000000000000000000004352",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 5,
+      "type": "00000023-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "Master Bedroom Air Sensor 01",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 6,
+      "type": "00000030-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "20000000000001",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 7,
+      "type": "00000052-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "001.000.006",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 9,
+      "type": "34AB8811-AC7F-4340-BAC3-FD6A85F9943B",
+      "format": "string",
+      "value": "2.1;16B127",
+      "perms": [
+       "pr",
+       "hd"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 10,
+      "type": "000000A6-0000-1000-8000-0026BB765291",
+      "format": "uint32",
+      "value": 0,
+      "perms": [
+       "pr",
+       "ev"
+      ],
+      "ev": false,
+      "minValue": 0,
+      "maxValue": 1,
+      "minStep": 1
+     }
+    ]
+   },
+   {
+    "iid": 48,
+    "type": "0000008A-0000-1000-8000-0026BB765291",
+    "primary": true,
+    "hidden": false,
+    "linked": [],
+    "characteristics": [
+     {
+      "iid": 51,
+      "type": "00000023-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "Temperature Sensor",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 37,
+      "type": "00000011-0000-1000-8000-0026BB765291",
+      "format": "float",
+      "value": 22,
+      "perms": [
+       "pr",
+       "ev"
+      ],
+      "ev": false,
+      "unit": "celsius",
+      "minValue": 0,
+      "maxValue": 100,
+      "minStep": 0.5
+     },
+     {
+      "iid": 49,
+      "type": "00000079-0000-1000-8000-0026BB765291",
+      "format": "uint8",
+      "value": 0,
+      "perms": [
+       "pr",
+       "ev"
+      ],
+      "ev": false,
+      "minValue": 0,
+      "maxValue": 1,
+      "minStep": 1,
+      "valid-values": [
+       0,
+       1
+      ]
+     },
+     {
+      "iid": 50,
+      "type": "00000077-0000-1000-8000-0026BB765291",
+      "format": "uint8",
+      "value": 0,
+      "perms": [
+       "pr",
+       "ev"
+      ],
+      "ev": false,
+      "minValue": 0,
+      "maxValue": 1,
+      "minStep": 1,
+      "valid-values": [
+       0,
+       1
+      ]
+     }
+    ]
+   },
+   {
+    "iid": 80,
+    "type": "00000082-0000-1000-8000-0026BB765291",
+    "primary": false,
+    "hidden": false,
+    "linked": [],
+    "characteristics": [
+     {
+      "iid": 81,
+      "type": "00000023-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "Humidity Sensor",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 41,
+      "type": "00000010-0000-1000-8000-0026BB765291",
+      "format": "float",
+      "value": 51,
+      "perms": [
+       "pr",
+       "ev"
+      ],
+      "ev": false,
+      "unit": "percentage",
+      "minValue": 0,
+      "maxValue": 100,
+      "minStep": 1
+     }
+    ]
+   },
+   {
+    "iid": 64,
+    "type": "00000085-0000-1000-8000-0026BB765291",
+    "primary": false,
+    "hidden": false,
+    "linked": [],
+    "characteristics": [
+     {
+      "iid": 66,
+      "type": "00000023-0000-1000-8000-0026BB765291",
+      "format": "string",
+      "value": "Motion Sensor",
+      "perms": [
+       "pr"
+      ],
+      "ev": false
+     },
+     {
+      "iid": 65,
+      "type": "00000022-0000-1000-8000-0026BB765291",
+      "format": "bool",
+      "value": 0,
+      "perms": [
+       "pr",
+       "ev"
+      ],
+      "ev": false
+     }
+    ]
+   }
+  ]
+ }
+]

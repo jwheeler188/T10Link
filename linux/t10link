@@ -1,0 +1,72 @@
+#!/bin/sh
+# t10link - control the T10Link bridge (Honeywell T9/T10 HomeKit -> Savant)
+#   t10link status            service state and the bridge's health states
+#   t10link states            every state the bridge is sending to Savant
+#   t10link logs [n]          last n log lines (default 50); t10link logs -f follows
+#   t10link restart|start|stop
+#   t10link pair              one-time HomeKit pairing (type the code the thermostat shows)
+#   t10link unpair            remove this bridge's pairing from the thermostat
+#   t10link dump              every HomeKit service/characteristic the thermostat exposes
+#   t10link send <command>    send one command, e.g.  t10link send SETCOOL 74
+HOME_DIR=/opt/t10link
+PY="$HOME_DIR/venv/bin/python -I"
+BR="$HOME_DIR/t10link_bridge.py -c $HOME_DIR/config.json"
+UNIT=t10link-bridge
+PORT=$(sed -n 's/.*"tcp_port": *\([0-9]*\).*/\1/p' "$HOME_DIR/config.json" 2>/dev/null)
+PORT=${PORT:-2400}
+RUN_AS=rpm
+
+as_user() {
+  if [ "$(id -un)" = "$RUN_AS" ]; then "$@"; else sudo -u "$RUN_AS" "$@"; fi
+}
+
+talk() {  # talk <command> <seconds>: print what the bridge sends back
+  $PY - "$PORT" "$1" "$2" <<'EOF'
+import socket, sys, time
+port, cmd, secs = int(sys.argv[1]), sys.argv[2], float(sys.argv[3])
+try:
+    s = socket.create_connection(("127.0.0.1", port), 3)
+except OSError as e:
+    sys.exit(f"bridge not answering on port {port}: {e}")
+s.settimeout(0.3)
+if cmd:
+    # skip the full state dump every new connection gets, then show only the reply
+    end = time.time() + 1.0
+    while time.time() < end:
+        try:
+            if not s.recv(65536):
+                break
+        except socket.timeout:
+            break
+    s.sendall(cmd.encode() + b"\n")
+buf, end = b"", time.time() + secs
+while time.time() < end:
+    try:
+        d = s.recv(65536)
+        if not d:
+            break
+        buf += d
+    except socket.timeout:
+        pass
+sys.stdout.write(buf.decode("ascii", "replace"))
+EOF
+}
+
+case "$1" in
+  status)
+    systemctl --no-pager --lines=0 status "$UNIT" | head -4
+    echo
+    talk "" 1.5 | grep -E '^(SYS_ONLINE|SYS_PAIRED|SYS_LIVE|SYS_ERROR|SYS_VERSION|SYS_LAST_UPDATE|SYS_LAST_COMMAND|T_NAME|T_FIRMWARE|T_MODE|T_STATE|T_TEMP|T_HEAT_SETPOINT|T_COOL_SETPOINT|T_HUMIDITY|T_FILTER1_CHANGE|T_FILTER2_CHANGE|T_ERROR|SENSOR[0-9]+_(NAME|TEMP))='
+    ;;
+  states) talk "" 1.5 | sort ;;
+  logs)
+    if [ "$2" = "-f" ]; then exec journalctl -u "$UNIT" -f; fi
+    journalctl -u "$UNIT" -n "${2:-50}" --no-pager ;;
+  restart|start|stop) exec sudo systemctl "$1" "$UNIT" ;;
+  pair) as_user $PY $BR --pair ;;
+  unpair) as_user $PY $BR --unpair && sudo systemctl restart "$UNIT" ;;
+  dump) as_user $PY $BR --dump ;;
+  send) shift; talk "$*" 6 | grep -vE '^(SYS_LAST_UPDATE)=' ;;
+  version) $PY $BR --version ;;
+  *) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

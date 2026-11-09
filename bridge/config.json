@@ -1,0 +1,11 @@
+{
+  "_readme": "T10Link bridge settings. After editing: t10link restart",
+  "tcp_port": 2400,
+  "thermostat_ip": "192.168.1.50",
+  "thermostat_port": 80,
+  "allowed_clients": ["auto"],
+  "units": "auto",
+  "max_sensors": 4,
+  "sensor_order": [],
+  "log_level": "INFO"
+}

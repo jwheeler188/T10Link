@@ -1,0 +1,18 @@
+# T10Link (Honeywell T9/T10 HomeKit bridge for Savant) on Linux. Installed by linux/install.sh.
+[Unit]
+Description=T10Link Honeywell T10 HomeKit bridge for Savant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rpm
+WorkingDirectory=/opt/t10link
+ExecStart=/opt/t10link/venv/bin/python -I /opt/t10link/t10link_bridge.py -c /opt/t10link/config.json
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
