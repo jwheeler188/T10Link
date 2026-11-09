@@ -7,7 +7,8 @@ Plain HTTP/1.1 on asyncio, one request per connection; no extra packages.
     GET  /                  the page
     GET  /api/status        JSON: every thermostat
     POST /api/pair          {"n": 2, "code": "12345678"}
-    POST /api/add           {"ip": "192.168.1.51"}
+    POST /api/add           {"ip": "192.168.1.51", "name": "Upstairs"}   (name optional)
+    POST /api/name          {"n": 2, "name": "Upstairs"}   (blank = the thermostat's HomeKit name)
     POST /api/remove        {"n": 3}   (last thermostat, not paired)
 
 Who may open it: web_clients ("lan" = private addresses by default) plus allowed_clients and this
@@ -133,7 +134,7 @@ class WebPage:
         if method == "GET" and path == "/api/status":
             await self.json(writer, 200, b.status())
             return
-        if method != "POST" or path not in ("/api/pair", "/api/add", "/api/remove"):
+        if method != "POST" or path not in ("/api/pair", "/api/add", "/api/remove", "/api/name"):
             await self.send(writer, 404, "text/plain", b"Not found\n")
             return
         # A page on another site can't add a custom header without a CORS preflight, which this
@@ -152,9 +153,13 @@ class WebPage:
             if path == "/api/pair":
                 msg = await b.pair(int(req.get("n")), str(req.get("code") or ""))
             elif path == "/api/add":
-                t = await b.add_thermostat(req.get("ip") or "")
-                msg = (f"Added thermostat {t.n} at {t.ip}. Pair it next; in Blueprint its HVAC data table row "
-                       f"gets ThermostatAddress {t.n}.")
+                t = await b.add_thermostat(req.get("ip") or "", req.get("name") or "")
+                msg = (f"Added thermostat {t.n}{' (' + t.name + ')' if t.name else ''} at {t.ip}. Pair it next; in "
+                       f"Blueprint its HVAC data table row gets ThermostatAddress {t.n}.")
+            elif path == "/api/name":
+                n = int(req.get("n"))
+                name = await b.set_name(n, req.get("name") or "")
+                msg = f"Thermostat {n} is now named {name}." if name else f"Thermostat {n} uses its HomeKit name again."
             else:
                 n = int(req.get("n"))
                 await b.remove_thermostat(n)
@@ -224,6 +229,8 @@ button.plain { background:var(--chip); color:var(--text); }
 button:disabled { opacity:.5; cursor:default; }
 .msg { font-size:13px; } .msg.ok { color:var(--ok); } .msg.bad { color:var(--bad); }
 .add { grid-column:1/-1; }
+details { font-size:13px; } summary { cursor:pointer; color:var(--accent); width:max-content; }
+details form { margin-top:8px; }
 ol { margin:4px 0 0 18px; padding:0; }
 </style>
 </head>
@@ -300,6 +307,18 @@ function actions(t, card) {
   } else {
     box.append(el("div", {class: "hint"}, "Blueprint: HVAC data table row with ThermostatAddress " + t.n + "."));
   }
+  const name = el("input", {placeholder: t.homekit_name ? "Name, e.g. Living Room (HomeKit: " + t.homekit_name + ")" : "Name, e.g. Living Room",
+                             maxlength: "40", autocomplete: "off"});
+  name.value = t.custom_name || "";
+  const rmsg = el("div", {class: "msg"});
+  box.append(el("details", {}, el("summary", {}, "Rename"),
+    el("form", {onsubmit: async (e) => {
+      e.preventDefault();
+      const r = await post("/api/name", {n: t.n, name: name.value});
+      rmsg.className = "msg " + (r.ok ? "ok" : "bad"); rmsg.textContent = r.message; refresh();
+    }}, name, el("button", {type: "submit"}, "Save")),
+    el("div", {class: "hint"}, "Shown here and in Savant (T_NAME). Blank = the thermostat's own HomeKit name, which can't be changed on a T10."),
+    rmsg));
   if (t.removable) {
     box.append(el("form", {onsubmit: async (e) => {
       e.preventDefault();
@@ -325,13 +344,14 @@ function render(st) {
       const card = el("section", {class: "card"});
       const fresh = {el: card, paired: t.paired, removable: t.removable, ip: t.ip};
       card.append(el("div", {class: "top"}, el("div", {}, el("div", {class: "num"}, "Thermostat " + t.n),
-        el("div", {class: "title"}, t.name || "Honeywell T9 / T10"), el("div", {class: "hint"}, t.ip)), el("span", {class: "badge"})));
+        el("div", {class: "title"}, t.name || "Honeywell T9 / T10"), el("div", {class: "hint ipline"}, t.ip)), el("span", {class: "badge"})));
       card.append(el("div", {class: "info"}), actions(t, card));
       if (b) b.el.replaceWith(card); else cards.insertBefore(card, addCard);
       built[t.n] = b = fresh;
     }
     const top = b.el.querySelector(".top");
     top.querySelector(".title").textContent = t.name || "Honeywell T9 / T10";
+    top.querySelector(".ipline").textContent = t.ip + (t.custom_name && t.homekit_name ? "  \u00b7  HomeKit: " + t.homekit_name : "");
     top.querySelector(".badge").replaceWith(badge(t));
     b.el.querySelector(".info").replaceWith(info(t));
   }
@@ -341,17 +361,18 @@ function render(st) {
 
 function makeAdd() {
   const ip = el("input", {placeholder: "Thermostat IP address, e.g. 192.168.1.51", autocomplete: "off"});
+  const nm = el("input", {placeholder: "Name (optional), e.g. Upstairs", maxlength: "40", autocomplete: "off"});
   const msg = el("div", {class: "msg"});
   const btn = el("button", {type: "submit"}, "Add");
   addCard = el("section", {class: "card add"}, el("div", {class: "title"}, "Add a thermostat"),
     el("div", {class: "hint"}, "Menu > Wi-Fi on the thermostat shows its IP. Give it a DHCP reservation first. It becomes the next number, which is its ThermostatAddress in Blueprint."),
     el("form", {onsubmit: async (e) => {
       e.preventDefault(); btn.disabled = true;
-      const r = await post("/api/add", {ip: ip.value});
+      const r = await post("/api/add", {ip: ip.value, name: nm.value});
       btn.disabled = false; msg.className = "msg " + (r.ok ? "ok" : "bad"); msg.textContent = r.message;
-      if (r.ok) ip.value = "";
+      if (r.ok) { ip.value = ""; nm.value = ""; }
       refresh();
-    }}, ip, btn), msg);
+    }}, ip, nm, btn), msg);
   cards.append(addCard);
 }
 

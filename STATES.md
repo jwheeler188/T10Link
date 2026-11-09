@@ -1,4 +1,4 @@
-# T10Link states (v1.3.0)
+# T10Link states (v1.3.1)
 
 Every state the bridge sends. Temperatures are in the thermostat's display units (`T_UNITS`).
 
@@ -23,7 +23,8 @@ These are thermostat 1's names. With several thermostats, thermostat *n*'s state
 
 | State | Type | Meaning |
 |---|---|---|
-| `T_NAME` | string | Thermostat name (HomeKit) |
+| `T_NAME` | string | Thermostat name: its name in config.json, else its HomeKit name |
+| `T_HOMEKIT_NAME` | string | The name the thermostat reports over HomeKit (read-only on the T10) |
 | `T_MODEL` | string | Model |
 | `T_FIRMWARE` | string | Firmware version |
 | `T_IP` | string | Thermostat IP address (from config.json) |

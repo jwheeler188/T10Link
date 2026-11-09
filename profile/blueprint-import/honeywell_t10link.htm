@@ -1,7 +1,7 @@
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=us-ascii">
-<title>T10Link 1.3.0</title>
+<title>T10Link 1.3.1</title>
 <style>
 body { font-family: -apple-system, Helvetica, Arial, sans-serif; font-size: 13px; line-height: 1.45; margin: 16px 20px; color: #222; max-width: 980px; }
 h1 { font-size: 22px; margin: 0 0 6px; }
@@ -79,7 +79,7 @@ sudo ./macos/install.sh</pre>
 <p>The installer prints the IP address and port to use in Blueprint. Then edit <code>config.json</code> (<code>/opt/t10link/config.json</code> on Linux, <code>~/T10Link/config.json</code> on a Mac):</p>
 <table>
 <tr><th>Setting</th><th>Meaning</th></tr>
-<tr><td><code>thermostats</code></td><td>One entry per thermostat: <code>[{"ip": "192.168.1.50"}]</code>. <code>ip</code> is the thermostat's IP address (Menu &gt; Wi-Fi on the thermostat shows it). Optional per entry: <code>port</code> (80) and <code>sensor_order</code>. The position in the list is the thermostat's number, 1, 2, 3 ... (see <a href="#several-thermostats">Several thermostats</a>). Configs from 1.2 with <code>thermostat_ip</code> still work</td></tr>
+<tr><td><code>thermostats</code></td><td>One entry per thermostat: <code>[{"ip": "192.168.1.50"}]</code>. <code>ip</code> is the thermostat's IP address (Menu &gt; Wi-Fi on the thermostat shows it). Optional per entry: <code>name</code> (e.g. <code>"Living Room"</code>, shown as <code>T_NAME</code>; the T10's own HomeKit name can't be changed), <code>port</code> (80) and <code>sensor_order</code>. The position in the list is the thermostat's number, 1, 2, 3 ... (see <a href="#several-thermostats">Several thermostats</a>). Configs from 1.2 with <code>thermostat_ip</code> still work</td></tr>
 <tr><td><code>allowed_clients</code></td><td>Who may connect. <code>["auto"]</code> (only this machine) is right when the bridge runs on the Savant host. Otherwise <code>["auto", "&lt;Savant host IP&gt;"]</code></td></tr>
 <tr><td><code>tcp_port</code></td><td>2400 (the profile expects 2400)</td></tr>
 <tr><td><code>units</code></td><td><code>auto</code> (the thermostat's display units), <code>F</code> or <code>C</code></td></tr>
@@ -107,7 +107,8 @@ sudo ./macos/install.sh</pre>
 <ul>
 <li>each thermostat: number, IP, connected or not, temperature, mode, setpoints, humidity, room sensors</li>
 <li>a <b>Pair</b> box on every thermostat that isn't paired: open <b>Menu &gt; Connect HomeKit</b> on that thermostat, type the code it shows and press Pair. The bridge connects to it straight away.</li>
-<li><b>Add a thermostat</b>: type its IP address. It's saved to <code>config.json</code> as the next number (its ThermostatAddress in Blueprint), and the bridge starts on it without a restart.</li>
+<li><b>Add a thermostat</b>: type its IP address (and a name, if you like). It's saved to <code>config.json</code> as the next number (its ThermostatAddress in Blueprint), and the bridge starts on it without a restart.</li>
+<li><b>Rename</b>: the name shown on the page and in Savant (<code>T_NAME</code>), saved in <code>config.json</code>. A T10 reports "T10 Thermostat" over HomeKit whatever it's called in the Honeywell Home app, and HomeKit doesn't let anyone change that, so T10Link keeps its own name. Blank goes back to the HomeKit name (still in <code>T_HOMEKIT_NAME</code>).</li>
 <li><b>Remove</b>, only on the last thermostat and only while it isn't paired (for a typo'd IP).</li>
 </ul>
 <p>Unpairing stays on the bridge machine (<code>t10link unpair N</code>), so nobody on the network can take a working thermostat out of Savant from a browser.</p>
@@ -134,9 +135,9 @@ sudo ./macos/install.sh</pre>
 <ol>
 <li><p>List every thermostat in <code>config.json</code>, in the order you want to number them:</p>
 <pre>"thermostats": [
-{"ip": "192.168.1.50"},
-{"ip": "192.168.1.51"},
-{"ip": "192.168.1.52"}
+{"ip": "192.168.1.50", "name": "Living Room"},
+{"ip": "192.168.1.51", "name": "Primary Bedroom"},
+{"ip": "192.168.1.52", "name": "Upstairs"}
 ],</pre>
 <p>The first is thermostat 1, the second thermostat 2, and so on. Keep the order once Savant is set up: the number ties each data table row to its thermostat. Add new thermostats at the end. Then <code>t10link restart</code>.</p></li>
 <li>Pair each one: on the <a href="#the-web-page">web page</a>, or <code>t10link pair</code> (repeat it; it pairs the next unpaired thermostat), or <code>t10link pair 2</code> for a particular one. <code>t10link status</code> shows <code>T_PAIRED</code>, <code>T2_PAIRED</code> ...</li>
@@ -235,7 +236,8 @@ sudo ./macos/install.sh</pre>
 <h3 id="thermostat-t_">Thermostat (T_...)</h3>
 <table>
 <tr><th>State</th><th>Type</th><th>Meaning</th></tr>
-<tr><td><code>T_NAME</code></td><td>string</td><td>Thermostat name (HomeKit)</td></tr>
+<tr><td><code>T_NAME</code></td><td>string</td><td>Thermostat name: its name in config.json, else its HomeKit name</td></tr>
+<tr><td><code>T_HOMEKIT_NAME</code></td><td>string</td><td>The name the thermostat reports over HomeKit (read-only on the T10)</td></tr>
 <tr><td><code>T_MODEL</code></td><td>string</td><td>Model</td></tr>
 <tr><td><code>T_FIRMWARE</code></td><td>string</td><td>Firmware version</td></tr>
 <tr><td><code>T_IP</code></td><td>string</td><td>Thermostat IP address (from config.json)</td></tr>

@@ -44,14 +44,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hap_local  # noqa: E402
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 log = logging.getLogger("t10link")
 SAVANT_ENCODING = "ascii"
 
 DEFAULT_CONFIG = {
     "tcp_port": 2400,                 # Savant connection (the profile expects 2400)
     # One entry per thermostat; the list position is its ThermostatAddress in Blueprint (1, 2, ...).
-    # Each: {"ip": ..., "port": 80, "sensor_order": [...]}. Give every thermostat a DHCP reservation.
+    # Each: {"ip": ..., "name": "Living Room", "port": 80, "sensor_order": [...]}. Give every thermostat
+    # a DHCP reservation. "name" is optional: the T10's own HomeKit name can't be changed.
     # Older configs with thermostat_ip / thermostat_port / sensor_order still work (one thermostat).
     "thermostats": [],
     "thermostat_ip": "192.168.1.50",
@@ -112,7 +113,8 @@ SYS_STATES = [
 ]
 
 T_STATES = [
-    ("T_NAME", "string", "Thermostat name (HomeKit)"),
+    ("T_NAME", "string", "Thermostat name: its name in config.json, else its HomeKit name"),
+    ("T_HOMEKIT_NAME", "string", "The name the thermostat reports over HomeKit (read-only on the T10)"),
     ("T_MODEL", "string", "Model"),
     ("T_FIRMWARE", "string", "Firmware version"),
     ("T_IP", "string", "Thermostat IP address (from config.json)"),
@@ -582,8 +584,20 @@ def thermostat_configs(cfg):
             raise ValueError(f"thermostats {seen[ip]} and {n} have the same ip {ip}")
         seen[ip] = n
         out.append({"n": n, "ip": ip, "port": int(t.get("port") or 80),
-                    "sensor_order": t.get("sensor_order") or []})
+                    "sensor_order": t.get("sensor_order") or [], "name": clean_name(t.get("name"))})
     return out
+
+
+NAME_MAX = 40
+
+
+def clean_name(v):
+    """A thermostat name for config.json and Savant: one line of printable ASCII (accents folded:
+    Cafe for Caf\u00e9), at most 40 characters."""
+    import unicodedata
+    text = unicodedata.normalize("NFKD", "" if v is None else str(v))
+    text = "".join(" " if ch.isspace() else ch for ch in text if ch.isspace() or (ch.isascii() and ch.isprintable()))
+    return " ".join(text.split())[:NAME_MAX].strip()
 
 
 def file_for(home: Path, name: str, n: int) -> Path:
@@ -603,6 +617,7 @@ class Thermostat:
     def __init__(self, bridge, tc, multi=False):
         self.bridge, self.cfg, self.home = bridge, bridge.cfg, bridge.home
         self.n, self.ip, self.port, self.sensor_order = tc["n"], tc["ip"], tc["port"], tc["sensor_order"]
+        self.name = tc.get("name") or ""
         self.tag = f"thermostat {self.n}: " if multi else ""
         self.log = _Prefix(log, {"p": self.tag})
         self.model: Model | None = None
@@ -687,6 +702,9 @@ class Thermostat:
             if v is not None and raw_mode not in uses:
                 for k in keys:
                     st[k] = fmt(v)
+        st["T_HOMEKIT_NAME"] = st["T_NAME"]
+        if self.name:
+            st["T_NAME"] = self.name
         st["T_SAVED_SETPOINTS"] = ", ".join(
             f"{k} {self.saved_value(k, u)}" for k in ("heat", "cool") if self.saved_value(k, u) is not None)
         before = tuple(ascii_text(self.shown[k]) if k in self.shown else None
@@ -864,7 +882,8 @@ class Thermostat:
         nums = {s["serial"]: self.model.numbers[s["serial"]] for s in self.model.sensors}
         if nums != {k: v for k, v in saved.items() if k in nums}:
             self.numbers_path.write_text(json.dumps({**saved, **nums}, indent=1))
-        self.log.info("thermostat %s at %s (%s, firmware %s); room sensors: %s", self.model.info.get("name"), self.ip,
+        self.log.info("thermostat %s at %s (%s, firmware %s); room sensors: %s",
+                      f"{self.name} ({self.model.info.get('name')})" if self.name else self.model.info.get("name"), self.ip,
                       self.model.info.get("model"), self.model.info.get("firmware"),
                       ", ".join(f"{self.model.numbers[s['serial']]}={s['name']}" for s in self.model.sensors) or "none")
         ev = self.model.evented()
@@ -1202,7 +1221,8 @@ class Bridge:
         path = self.config_path
         raw = json.loads(path.read_text()) if path.exists() else {}
         if not raw.get("thermostats"):
-            raw["thermostats"] = [{"ip": t.ip, "port": t.port, "sensor_order": t.sensor_order} for t in self.thermostats]
+            raw["thermostats"] = [{"ip": t.ip, **({"name": t.name} if t.name else {}), "port": t.port,
+                                   "sensor_order": t.sensor_order} for t in self.thermostats]
             for k in ("thermostat_ip", "thermostat_port", "sensor_order"):
                 raw.pop(k, None)
         change(raw["thermostats"])
@@ -1214,8 +1234,9 @@ class Bridge:
         os.replace(tmp, path)
         self.cfg["thermostats"] = raw["thermostats"]
 
-    async def add_thermostat(self, ip):
+    async def add_thermostat(self, ip, name=""):
         """Add a thermostat by IP while running: saved to config.json, connected straight away."""
+        name = clean_name(name)
         try:
             ip = str(ipaddress.ip_address(str(ip).strip()))
         except ValueError:
@@ -1224,7 +1245,7 @@ class Bridge:
             raise ValueError(f"{ip} is already thermostat {next(t.n for t in self.thermostats if t.ip == ip)}")
         if len(self.thermostats) >= MAX_THERMOSTATS:
             raise ValueError(f"a bridge takes at most {MAX_THERMOSTATS} thermostats")
-        self.write_thermostats(lambda lst: lst.append({"ip": ip}))
+        self.write_thermostats(lambda lst: lst.append({"ip": ip, **({"name": name} if name else {})}))
         tc = thermostat_configs(self.cfg)[-1]
         t = Thermostat(self, tc)
         self.thermostats.append(t)
@@ -1233,9 +1254,30 @@ class Bridge:
         log.info("web page: added thermostat %s at %s", t.n, ip)
         await self.publish(self.sys_summary())
         await t.publish({"T_IP": t.ip, "T_PAIRED": t.sys["SYS_PAIRED"], "T_ONLINE": 0, "T_PENDING": "", "T_ERROR": "",
-                         "T_LAST_CHANGE": ""})
+                         "T_LAST_CHANGE": "", **({"T_NAME": t.name} if t.name else {})})
         self.start_loop(t)
         return t
+
+    async def set_name(self, n, name):
+        """Name thermostat n (saved in config.json); blank = use its HomeKit name again."""
+        t = self.by_n.get(n)
+        if t is None:
+            raise ValueError(f"no thermostat {n}")
+        name = clean_name(name)
+
+        def change(lst):
+            if name:
+                lst[n - 1]["name"] = name
+            else:
+                lst[n - 1].pop("name", None)
+        self.write_thermostats(change)
+        t.name = name
+        t.log.info("named %r", name or "(HomeKit name)")
+        if t.model:
+            await t.publish_model()
+        else:
+            await t.publish({"T_NAME": name})
+        return name
 
     async def remove_thermostat(self, n):
         """Only the last thermostat, and only while it isn't paired: removing it can't renumber the
@@ -1296,7 +1338,8 @@ class Bridge:
                         "humidity": g(sensor_key(i, "HUMIDITY")), "motion": g(sensor_key(i, "MOTION")) == "1"}
                        for i in range(1, self.max_sensors + 1) if g(sensor_key(i, "PRESENT")) == "1"]
             out.append({"n": t.n, "ip": t.ip, "paired": t.pairing_path.exists(), "connected": bool(t.online),
-                        "online": g("T_ONLINE") == "1", "name": g("T_NAME"), "model": g("T_MODEL"),
+                        "online": g("T_ONLINE") == "1", "name": t.name or g("T_NAME"), "custom_name": t.name,
+                        "homekit_name": g("T_HOMEKIT_NAME"), "model": g("T_MODEL"),
                         "firmware": g("T_FIRMWARE"), "mode": g("T_MODE"), "state": g("T_STATE"), "temp": g("T_TEMP"),
                         "heat": g("T_HEAT_SETPOINT"), "cool": g("T_COOL_SETPOINT"), "humidity": g("T_HUMIDITY"),
                         "units": g("T_UNITS"), "pending": g("T_PENDING"), "error": g("T_ERROR"),
@@ -1318,7 +1361,7 @@ class Bridge:
                             "SYS_REJECTED_CLIENT": "", **self.sys_summary()})
         for t in self.thermostats:
             await t.publish({"T_IP": t.ip, "T_PAIRED": t.sys["SYS_PAIRED"], "T_PENDING": "", "T_ERROR": "",
-                             "T_LAST_CHANGE": ""})
+                             "T_LAST_CHANGE": "", **({"T_NAME": t.name} if t.name else {})})
 
     async def run(self):
         loop = asyncio.get_running_loop()

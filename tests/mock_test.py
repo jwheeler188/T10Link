@@ -620,6 +620,35 @@ async def web_tests():
     code, _, _ = await http(port, "GET", "/nope")
     check("web: unknown path 404", code == 404)
 
+    # names: the T10's HomeKit name is read-only, so T10Link keeps its own in config.json
+    check("name: none set -> T_NAME is the HomeKit name",
+          bridge.values.get("T_NAME") == "T10 Thermostat" and bridge.values.get("T_HOMEKIT_NAME") == "T10 Thermostat")
+    code, _, body = await http(port, "POST", "/api/name", {"n": 1, "name": "  Living\tRoom "}, J)
+    raw = json.loads((tmp / "config.json").read_text())
+    check("name: rename thermostat 1 -> T_NAME, saved in config.json, HomeKit name kept",
+          code == 200 and bridge.values.get("T_NAME") == "Living Room" and bridge.values.get("T_HOMEKIT_NAME") == "T10 Thermostat"
+          and raw["thermostats"][0].get("name") == "Living Room", (code, body, raw["thermostats"][0]))
+    st = json.loads((await http(port, "GET", "/api/status"))[2])["thermostats"][0]
+    check("name: status has name, custom_name and homekit_name",
+          (st["name"], st["custom_name"], st["homekit_name"]) == ("Living Room", "Living Room", "T10 Thermostat"), st)
+    check("name: survives a restart", b.Bridge(b.load_config(tmp / "config.json"), tmp).thermostats[0].name == "Living Room")
+    code, _, _ = await http(port, "POST", "/api/name", {"n": 2, "name": "Caf\u00e9 Upstairs \u2603"}, J)
+    await asyncio.sleep(0.2)
+    check("name: accents folded to ASCII for Savant (T2_NAME)", code == 200 and bridge.values.get("T2_NAME") == "Cafe Upstairs",
+          bridge.values.get("T2_NAME"))
+    code, _, _ = await http(port, "POST", "/api/name", {"n": 1, "name": ""}, J)
+    raw = json.loads((tmp / "config.json").read_text())
+    check("name: blank -> back to the HomeKit name, removed from config.json",
+          code == 200 and bridge.values.get("T_NAME") == "T10 Thermostat" and "name" not in raw["thermostats"][0])
+    code, _, body = await http(port, "POST", "/api/add", {"ip": "192.168.1.53", "name": "Guest Suite"}, J)
+    await asyncio.sleep(0.2)
+    check("name: add with a name -> T3_NAME before it is even paired",
+          code == 200 and bridge.values.get("T3_NAME") == "Guest Suite" and b"(Guest Suite)" in body
+          and json.loads((tmp / "config.json").read_text())["thermostats"][2].get("name") == "Guest Suite", body)
+    await http(port, "POST", "/api/remove", {"n": 3}, J)
+    code, _, _ = await http(port, "POST", "/api/name", {"n": 9, "name": "x"}, J)
+    check("name: unknown thermostat refused", code == 400)
+
     check("web_clients lan: private addresses yes, public no",
           page.client_allowed("192.168.7.9") and page.client_allowed("10.1.2.3") and not page.client_allowed("8.8.8.8"))
     bridge.cfg.update(web_clients=["10.9.9.0/24"], web_password="secret")

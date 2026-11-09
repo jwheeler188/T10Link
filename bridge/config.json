@@ -3,7 +3,7 @@
   "_thermostats": "One entry per thermostat. Its position in this list (1, 2, 3 ...) is its ThermostatAddress in Blueprint's HVAC data table. Add more like this: [{\"ip\": \"192.168.1.50\"}, {\"ip\": \"192.168.1.51\"}]",
   "tcp_port": 2400,
   "thermostats": [
-    {"ip": "192.168.1.50", "port": 80, "sensor_order": []}
+    {"ip": "192.168.1.50", "name": "", "port": 80, "sensor_order": []}
   ],
   "allowed_clients": ["auto"],
   "web_port": 2401,

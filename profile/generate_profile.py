@@ -113,6 +113,7 @@ def head(model, sensors, thermostats):
         Thermostat state is only ever set from what the thermostat reports, never assumed from a button press.
 
         ====================== Change Log ==================
+        Version: 1.3.1 Change: Thermostat names: T_NAME is the name set in the bridge's config.json or web page (Rename); the thermostat's own HomeKit name is the new T_HOMEKIT_NAME. Needs bridge 1.3.1.
         Version: 1.3.0 Change: Bridge web page (port 2401) for status, pairing and adding thermostats. Several thermostats on one bridge and one component: one HVAC data table row per thermostat (ThermostatAddress 1, 2, 3 ...). HVAC actions now send the ThermostatAddress; the custom actions take an optional Thermostat argument (blank = 1). New states T_IP, T_PAIRED, T_SENSOR_COUNT, SYS_THERMOSTAT_COUNT. Needs bridge 1.3.0; existing single-thermostat setups keep every state name.
         Version: 1.2.0 Change: The bridge now installs on macOS (including the Savant host) as well as Linux / Raspberry Pi (32- and 64-bit). Profile unchanged apart from these notes.
         Version: 1.1.2 Change: Auto can now be ticked in the HVAC data table. Blueprint enables the Auto column only when the profile has the ThermostatCurrentSetPoint state, so the bridge now sends ThermostatCurrentSetPoint_1 (the active setpoint in Heat / Cool). Needs bridge 1.1.2.

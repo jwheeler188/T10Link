@@ -102,7 +102,7 @@ The installer prints the IP address and port to use in Blueprint. Then edit `con
 
 | Setting | Meaning |
 |---|---|
-| `thermostats` | One entry per thermostat: `[{"ip": "192.168.1.50"}]`. `ip` is the thermostat's IP address (Menu > Wi-Fi on the thermostat shows it). Optional per entry: `port` (80) and `sensor_order`. The position in the list is the thermostat's number, 1, 2, 3 ... (see [Several thermostats](#several-thermostats)). Configs from 1.2 with `thermostat_ip` still work |
+| `thermostats` | One entry per thermostat: `[{"ip": "192.168.1.50"}]`. `ip` is the thermostat's IP address (Menu > Wi-Fi on the thermostat shows it). Optional per entry: `name` (e.g. `"Living Room"`, shown as `T_NAME`; the T10's own HomeKit name can't be changed), `port` (80) and `sensor_order`. The position in the list is the thermostat's number, 1, 2, 3 ... (see [Several thermostats](#several-thermostats)). Configs from 1.2 with `thermostat_ip` still work |
 | `allowed_clients` | Who may connect. `["auto"]` (only this machine) is right when the bridge runs on the Savant host. Otherwise `["auto", "<Savant host IP>"]` |
 | `tcp_port` | 2400 (the profile expects 2400) |
 | `units` | `auto` (the thermostat's display units), `F` or `C` |
@@ -144,8 +144,12 @@ address). Open it from any computer or phone on your network. It shows:
 - each thermostat: number, IP, connected or not, temperature, mode, setpoints, humidity, room sensors
 - a **Pair** box on every thermostat that isn't paired: open **Menu > Connect HomeKit** on that
   thermostat, type the code it shows and press Pair. The bridge connects to it straight away.
-- **Add a thermostat**: type its IP address. It's saved to `config.json` as the next number (its
+- **Add a thermostat**: type its IP address (and a name, if you like). It's saved to `config.json` as the next number (its
   ThermostatAddress in Blueprint), and the bridge starts on it without a restart.
+- **Rename**: the name shown on the page and in Savant (`T_NAME`), saved in `config.json`. A T10
+  reports "T10 Thermostat" over HomeKit whatever it's called in the Honeywell Home app, and HomeKit
+  doesn't let anyone change that, so T10Link keeps its own name. Blank goes back to the HomeKit name
+  (still in `T_HOMEKIT_NAME`).
 - **Remove**, only on the last thermostat and only while it isn't paired (for a typo'd IP).
 
 Unpairing stays on the bridge machine (`t10link unpair N`), so nobody on the network can take a
@@ -185,9 +189,9 @@ for the same bridge, and don't import the profile again.
 
    ```
    "thermostats": [
-     {"ip": "192.168.1.50"},
-     {"ip": "192.168.1.51"},
-     {"ip": "192.168.1.52"}
+     {"ip": "192.168.1.50", "name": "Living Room"},
+     {"ip": "192.168.1.51", "name": "Primary Bedroom"},
+     {"ip": "192.168.1.52", "name": "Upstairs"}
    ],
    ```
 

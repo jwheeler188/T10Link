@@ -1,6 +1,14 @@
 # Changelog
 
 
+## 1.3.1 (2026-11-08)
+
+- **Thermostat names**: `"name"` per thermostat in `config.json`, or **Rename** on the web page
+  (also when adding one). It's shown on the page and sent as `T_NAME` / `T2_NAME` ... A T10 always
+  reports "T10 Thermostat" over HomeKit, whatever the Honeywell Home app calls it, and HomeKit
+  doesn't allow changing it; that name is now `T_HOMEKIT_NAME`. Profile: one new state per
+  thermostat (re-import).
+
 ## 1.3.0 (2026-11-08)
 
 - **Several thermostats on one bridge and one Blueprint component** (up to 8 with the shipped
