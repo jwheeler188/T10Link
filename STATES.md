@@ -1,20 +1,23 @@
-# T10Link states (v1.2.0)
+# T10Link states (v1.3.0)
 
 Every state the bridge sends. Temperatures are in the thermostat's display units (`T_UNITS`).
+
+These are thermostat 1's names. With several thermostats, thermostat *n*'s states are the same with `T_` replaced by `Tn_` (`T2_MODE`), `SENSOR` prefixed with `Tn_` (`T2_SENSOR1_TEMP`) and `_1` replaced by `_n` (`ThermostatMode_2`). The `SYS_` states cover the whole bridge.
 
 ## System
 
 | State | Type | Meaning |
 |---|---|---|
-| `SYS_ONLINE` | integer | 1 = bridge has a live HomeKit session with the thermostat |
-| `SYS_PAIRED` | integer | 1 = paired (pairing.json present). 0 = run: t10link pair |
-| `SYS_LIVE` | integer | 1 = HomeKit push events subscribed (0 = polling only) |
+| `SYS_ONLINE` | integer | 1 = bridge has a live HomeKit session with every thermostat (per thermostat: T_ONLINE) |
+| `SYS_PAIRED` | integer | 1 = every thermostat is paired. 0 = run: t10link pair (per thermostat: T_PAIRED) |
+| `SYS_LIVE` | integer | 1 = HomeKit push events subscribed on every thermostat (0 = polling only) |
 | `SYS_LAST_UPDATE` | string | Time of the last value read from the thermostat |
 | `SYS_LAST_COMMAND` | string | Last command from Savant and its result |
-| `SYS_ERROR` | string | Last bridge error, blank when healthy |
+| `SYS_ERROR` | string | Bridge errors, blank when healthy (with several thermostats: "thermostat 2: ...") |
 | `SYS_VERSION` | string | Bridge version |
 | `SYS_REJECTED_CLIENT` | string | Last connection refused by allowed_clients: IP and time |
-| `SYS_SENSOR_COUNT` | integer | Room sensors found |
+| `SYS_SENSOR_COUNT` | integer | Room sensors found, all thermostats |
+| `SYS_THERMOSTAT_COUNT` | integer | Thermostats in config.json |
 
 ## Thermostat (T_...)
 
@@ -23,6 +26,8 @@ Every state the bridge sends. Temperatures are in the thermostat's display units
 | `T_NAME` | string | Thermostat name (HomeKit) |
 | `T_MODEL` | string | Model |
 | `T_FIRMWARE` | string | Firmware version |
+| `T_IP` | string | Thermostat IP address (from config.json) |
+| `T_PAIRED` | integer | 1 = this thermostat is paired with the bridge |
 | `T_ONLINE` | integer | 1 = thermostat reachable (0 after offline_grace_seconds unreachable) |
 | `T_MODE` | string | Off | Heat | Cool | Auto (Unknown while offline) |
 | `T_STATE` | string | Idle | Heating | Cooling (Unknown while offline) |
@@ -37,6 +42,7 @@ Every state the bridge sends. Temperatures are in the thermostat's display units
 | `T_OCCUPIED` | integer | 1 = thermostat's own occupancy sensor sees someone |
 | `T_FILTER1_CHANGE` | integer | 1 = filter 1 reminder is due |
 | `T_FILTER2_CHANGE` | integer | 1 = filter 2 reminder is due |
+| `T_SENSOR_COUNT` | integer | Room sensors found on this thermostat |
 | `T_PENDING` | string | What is being changed while a command is being confirmed, else blank |
 | `T_SAVED_SETPOINTS` | string | Setpoints saved for another mode, applied when the thermostat switches to it (e.g. heat 68) |
 | `T_ERROR` | string | Last command error, blank when fine |

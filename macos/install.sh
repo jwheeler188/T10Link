@@ -99,7 +99,7 @@ if [ -f "$DEST/config.json" ]; then
 else
   BK="$(ls -1d "$USER_HOME"/T10Link-backup-* 2>/dev/null | sort | tail -1 || true)"
   if [ -n "$BK" ] && [ -f "$BK/config.json" ]; then
-    for f in config.json pairing.json sensors.json setpoints.json; do [ -f "$BK/$f" ] && cp -p "$BK/$f" "$DEST/"; done
+    for f in "$BK"/config.json "$BK"/pairing*.json "$BK"/sensors*.json "$BK"/setpoints*.json; do [ -f "$f" ] && cp -p "$f" "$DEST/"; done
     echo "    restored settings and pairing from $BK"
   else
     cp "$SRC/config.json" "$DEST/"
@@ -109,7 +109,7 @@ fi
 chown -R "$RUN_USER" "$DEST"
 chmod 700 "$DEST"          # pairing.json (HomeKit keys) lives here
 chmod 755 "$DEST/t10link" "$DEST/uninstall.sh"
-[ -f "$DEST/pairing.json" ] && chmod 600 "$DEST/pairing.json"
+for f in "$DEST"/pairing*.json; do [ -f "$f" ] && chmod 600 "$f"; done
 
 # ---- Python environment ----------------------------------------------------------
 VPY="$DEST/venv/bin/python3"
@@ -235,5 +235,5 @@ cat <<EOF
 
 EOF
 NEXT=1
-grep -q '"192.168.1.50"' "$DEST/config.json" && { echo "  $NEXT. Edit $DEST/config.json: thermostat_ip (and allowed_clients if Savant runs on another machine)."; NEXT=$((NEXT+1)); }
-[ -f "$DEST/pairing.json" ] || echo "  $NEXT. t10link pair   (on the thermostat: Menu > Connect HomeKit shows the code)"
+grep -q '"192.168.1.50"' "$DEST/config.json" && { echo "  $NEXT. Edit $DEST/config.json: each thermostat's ip under "thermostats" (and allowed_clients if Savant runs on another machine)."; NEXT=$((NEXT+1)); }
+[ -f "$DEST/pairing.json" ] || echo "  $NEXT. t10link pair   (on the thermostat: Menu > Connect HomeKit shows the code; repeat for each thermostat)"

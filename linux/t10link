@@ -4,10 +4,10 @@
 #   t10link states            every state the bridge is sending to Savant
 #   t10link logs [n]          last n log lines (default 50); t10link logs -f follows
 #   t10link restart|start|stop
-#   t10link pair              one-time HomeKit pairing (type the code the thermostat shows)
-#   t10link unpair            remove this bridge's pairing from the thermostat
-#   t10link dump              every HomeKit service/characteristic the thermostat exposes
-#   t10link send <command>    send one command, e.g.  t10link send SETCOOL 74
+#   t10link pair [N]          one-time HomeKit pairing of thermostat N (default: the next one not paired)
+#   t10link unpair [N]        remove this bridge's pairing from thermostat N
+#   t10link dump [N]          every HomeKit service/characteristic thermostat N exposes (default 1)
+#   t10link send <command>    send one command, e.g.  t10link send SETCOOL 74   (thermostat 2: @2 SETCOOL 74)
 HOME_DIR=/opt/t10link
 PY="$HOME_DIR/venv/bin/python -I"
 BR="$HOME_DIR/t10link_bridge.py -c $HOME_DIR/config.json"
@@ -56,16 +56,16 @@ case "$1" in
   status)
     systemctl --no-pager --lines=0 status "$UNIT" | head -4
     echo
-    talk "" 1.5 | grep -E '^(SYS_ONLINE|SYS_PAIRED|SYS_LIVE|SYS_ERROR|SYS_VERSION|SYS_LAST_UPDATE|SYS_LAST_COMMAND|T_NAME|T_FIRMWARE|T_MODE|T_STATE|T_TEMP|T_HEAT_SETPOINT|T_COOL_SETPOINT|T_HUMIDITY|T_FILTER1_CHANGE|T_FILTER2_CHANGE|T_ERROR|SENSOR[0-9]+_(NAME|TEMP))='
+    talk "" 1.5 | grep -E '^(SYS_(ONLINE|PAIRED|LIVE|ERROR|VERSION|LAST_UPDATE|LAST_COMMAND|THERMOSTAT_COUNT)|T[0-9]*_(NAME|IP|PAIRED|ONLINE|FIRMWARE|MODE|STATE|TEMP|HEAT_SETPOINT|COOL_SETPOINT|HUMIDITY|FILTER1_CHANGE|FILTER2_CHANGE|ERROR)|(T[0-9]+_)?SENSOR[0-9]+_(NAME|TEMP))=' | sort
     ;;
   states) talk "" 1.5 | sort ;;
   logs)
     if [ "$2" = "-f" ]; then exec journalctl -u "$UNIT" -f; fi
     journalctl -u "$UNIT" -n "${2:-50}" --no-pager ;;
   restart|start|stop) exec sudo systemctl "$1" "$UNIT" ;;
-  pair) as_user $PY $BR --pair ;;
-  unpair) as_user $PY $BR --unpair && sudo systemctl restart "$UNIT" ;;
-  dump) as_user $PY $BR --dump ;;
+  pair) as_user $PY $BR --pair $2 ;;
+  unpair) as_user $PY $BR --unpair $2 && sudo systemctl restart "$UNIT" ;;
+  dump) as_user $PY $BR --dump $2 ;;
   send) shift; talk "$*" 6 | grep -vE '^(SYS_LAST_UPDATE)=' ;;
   version) $PY $BR --version ;;
   *) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;

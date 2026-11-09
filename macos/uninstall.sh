@@ -102,7 +102,7 @@ if [ -d "$DEST" ]; then
   if [ "$KEEP" = "1" ]; then
     BK="$(dirname "$DEST")/T10Link-backup-$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$BK"; chmod 700 "$BK"
-    for f in config.json pairing.json sensors.json setpoints.json; do cp -p "$DEST/$f" "$BK/" 2>/dev/null || true; done
+    for f in "$DEST"/config.json "$DEST"/pairing*.json "$DEST"/sensors*.json "$DEST"/setpoints*.json; do [ -f "$f" ] && cp -p "$f" "$BK/"; done
     chown -R "$RUN_USER" "$BK"
     say "Saved settings and pairing to $BK"
   fi

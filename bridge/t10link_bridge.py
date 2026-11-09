@@ -2,17 +2,20 @@
 """
 T10Link - Honeywell T9/T10 thermostat bridge for Savant (local HomeKit)
 ======================================================================
-Talks to a Honeywell Home T9/T10 (Pro) thermostat directly over the LAN with HomeKit
-(HAP over IP, via aiohomekit) - no Honeywell/Resideo cloud - and serves it to the Savant
+Talks to Honeywell Home T9/T10 (Pro) thermostats directly over the LAN with HomeKit
+(HAP over IP, via aiohomekit) - no Honeywell/Resideo cloud - and serves them to the Savant
 host over a plain TCP line protocol: one KEY=value line per state. Commands from Savant
-come back the same way (SETMODE HEAT, SETHEAT 70, ...).
+come back the same way (SETMODE HEAT, SETHEAT 70, ...). One bridge serves up to 16
+thermostats: "@2 SETHEAT 70" goes to thermostat 2 (no "@" = thermostat 1), and thermostat
+n's states end in _n (ThermostatMode_2) or start with Tn_ (T2_MODE, T2_SENSOR1_TEMP).
 
-    t10link_bridge.py --pair      one-time HomeKit pairing (type the code the thermostat shows)
-    t10link_bridge.py --dump      print every HomeKit service/characteristic the thermostat exposes
-    t10link_bridge.py --unpair    remove this bridge's pairing from the thermostat
-    t10link_bridge.py             run the service
+    t10link_bridge.py --pair [N]    one-time HomeKit pairing (type the code the thermostat shows)
+    t10link_bridge.py --dump [N]    print every HomeKit service/characteristic thermostat N exposes
+    t10link_bridge.py --unpair [N]  remove this bridge's pairing from thermostat N
+    t10link_bridge.py               run the service
 
-Only the HomeKit long-term pairing keys are stored (pairing.json, service user only).
+Only the HomeKit long-term pairing keys are stored (pairing.json for thermostat 1,
+pairing-N.json for thermostat N; service user only).
 The setup code is used once and never saved.
 
 HomeKit on the T9/T10 exposes: mode, heating/cooling state, temperature, heat and cool
@@ -31,6 +34,7 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import signal
 import socket
 import sys
@@ -40,15 +44,19 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hap_local  # noqa: E402
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 log = logging.getLogger("t10link")
 SAVANT_ENCODING = "ascii"
 
 DEFAULT_CONFIG = {
     "tcp_port": 2400,                 # Savant connection (the profile expects 2400)
-    "thermostat_ip": "192.168.1.50",   # give the thermostat a DHCP reservation
+    # One entry per thermostat; the list position is its ThermostatAddress in Blueprint (1, 2, ...).
+    # Each: {"ip": ..., "port": 80, "sensor_order": [...]}. Give every thermostat a DHCP reservation.
+    # Older configs with thermostat_ip / thermostat_port / sensor_order still work (one thermostat).
+    "thermostats": [],
+    "thermostat_ip": "192.168.1.50",
     "thermostat_port": 80,
-    "max_sensors": 4,                 # room-sensor slots the profile has states for
+    "max_sensors": 4,                 # room-sensor slots (per thermostat) the profile has states for
     "sensor_order": [],               # optional: fix sensor numbering by name, e.g. ["Master Bedroom Air Sensor 01"]
     "units": "auto",                  # auto = the thermostat's display units; or "F" / "C"
     "poll_seconds": 60,               # safety poll; HomeKit events cover normal changes
@@ -85,21 +93,24 @@ def short_type(t: str) -> str:
 # these, so the profile always matches what the bridge sends. (key, savant type, description)
 # ---------------------------------------------------------------------------
 SYS_STATES = [
-    ("SYS_ONLINE", "integer", "1 = bridge has a live HomeKit session with the thermostat"),
-    ("SYS_PAIRED", "integer", "1 = paired (pairing.json present). 0 = run: t10link pair"),
-    ("SYS_LIVE", "integer", "1 = HomeKit push events subscribed (0 = polling only)"),
+    ("SYS_ONLINE", "integer", "1 = bridge has a live HomeKit session with every thermostat (per thermostat: T_ONLINE)"),
+    ("SYS_PAIRED", "integer", "1 = every thermostat is paired. 0 = run: t10link pair (per thermostat: T_PAIRED)"),
+    ("SYS_LIVE", "integer", "1 = HomeKit push events subscribed on every thermostat (0 = polling only)"),
     ("SYS_LAST_UPDATE", "string", "Time of the last value read from the thermostat"),
     ("SYS_LAST_COMMAND", "string", "Last command from Savant and its result"),
-    ("SYS_ERROR", "string", "Last bridge error, blank when healthy"),
+    ("SYS_ERROR", "string", "Bridge errors, blank when healthy (with several thermostats: \"thermostat 2: ...\")"),
     ("SYS_VERSION", "string", "Bridge version"),
     ("SYS_REJECTED_CLIENT", "string", "Last connection refused by allowed_clients: IP and time"),
-    ("SYS_SENSOR_COUNT", "integer", "Room sensors found"),
+    ("SYS_SENSOR_COUNT", "integer", "Room sensors found, all thermostats"),
+    ("SYS_THERMOSTAT_COUNT", "integer", "Thermostats in config.json"),
 ]
 
 T_STATES = [
     ("T_NAME", "string", "Thermostat name (HomeKit)"),
     ("T_MODEL", "string", "Model"),
     ("T_FIRMWARE", "string", "Firmware version"),
+    ("T_IP", "string", "Thermostat IP address (from config.json)"),
+    ("T_PAIRED", "integer", "1 = this thermostat is paired with the bridge"),
     ("T_ONLINE", "integer", "1 = thermostat reachable (0 after offline_grace_seconds unreachable)"),
     ("T_MODE", "string", "Off | Heat | Cool | Auto (Unknown while offline)"),
     ("T_STATE", "string", "Idle | Heating | Cooling (Unknown while offline)"),
@@ -114,6 +125,7 @@ T_STATES = [
     ("T_OCCUPIED", "integer", "1 = thermostat's own occupancy sensor sees someone"),
     ("T_FILTER1_CHANGE", "integer", "1 = filter 1 reminder is due"),
     ("T_FILTER2_CHANGE", "integer", "1 = filter 2 reminder is due"),
+    ("T_SENSOR_COUNT", "integer", "Room sensors found on this thermostat"),
     ("T_PENDING", "string", "What is being changed while a command is being confirmed, else blank"),
     ("T_SAVED_SETPOINTS", "string", "Setpoints saved for another mode, applied when the thermostat switches to it (e.g. heat 68)"),
     ("T_ERROR", "string", "Last command error, blank when fine"),
@@ -131,7 +143,7 @@ SENSOR_FIELDS = [
 ]
 
 # Savant's own HVAC state names (as in Savant's Honeywell T-Series and Venstar profiles), for the
-# Savant app's climate screen. One thermostat per component, so the suffix is always _1.
+# Savant app's climate screen. The suffix is the ThermostatAddress: _1 here, _n for thermostat n.
 SAVANT_STATES = [
     ("ThermostatCurrentTemperature_1", "string", "Current temperature"),
     ("ThermostatCurrentHeatPoint_1", "string", "Heat setpoint"),
@@ -161,15 +173,36 @@ SAVANT_STATES = [
 ]
 
 
+MAX_THERMOSTATS = 16
+
+
 def sensor_key(n, field):
     return f"SENSOR{n}_{field}"
 
 
-def state_defs(max_sensors):
-    defs = list(SYS_STATES) + list(T_STATES)
-    for n in range(1, max_sensors + 1):
-        defs += [(sensor_key(n, f), t, d) for f, t, d in SENSOR_FIELDS]
-    return defs + list(SAVANT_STATES)
+def key_for(n, key):
+    """Thermostat 1 keeps the plain names; thermostat n: T_MODE -> Tn_MODE, SENSOR1_TEMP ->
+    Tn_SENSOR1_TEMP, ThermostatMode_1 -> ThermostatMode_n (Savant's address suffix)."""
+    if n == 1:
+        return key
+    if key.startswith("T_"):
+        return f"T{n}_" + key[2:]
+    if key.startswith("SENSOR"):
+        return f"T{n}_{key}"
+    if key.endswith("_1"):
+        return f"{key[:-2]}_{n}"
+    return key
+
+
+def state_defs(max_sensors, thermostats=1):
+    defs = list(SYS_STATES)
+    for t in range(1, thermostats + 1):
+        per = list(T_STATES)
+        for n in range(1, max_sensors + 1):
+            per += [(sensor_key(n, f), ty, d) for f, ty, d in SENSOR_FIELDS]
+        per += list(SAVANT_STATES)
+        defs += [(key_for(t, k), ty, d if t == 1 else f"Thermostat {t}: {d}" if d else "") for k, ty, d in per]
+    return defs
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +449,7 @@ def compute_states(m: Model, units_pref="auto", online=True, max_sensors=4) -> d
             sensor_key(n, "LOW_BATTERY"): 1 if m.v(s.get("low_battery")) else 0,
             sensor_key(n, "FAULT"): 1 if m.v(s.get("fault")) else 0,
         })
-    out["SYS_SENSOR_COUNT"] = len(m.sensors)
+    out["T_SENSOR_COUNT"] = len(m.sensors)
     b = lambda x: "true" if x else "false"  # noqa: E731
     out.update({
         "ThermostatCurrentTemperature_1": fmt(temp), "ThermostatCurrentHeatPoint_1": fmt(heat),
@@ -523,11 +556,49 @@ def plan_write(m: Model, verb: str, arg: str, units_pref="auto"):
 # ---------------------------------------------------------------------------
 # bridge service
 # ---------------------------------------------------------------------------
-class Bridge:
-    def __init__(self, cfg, home: Path):
-        self.cfg, self.home = cfg, home
-        self.values = {}
-        self.clients = set()
+def thermostat_configs(cfg):
+    """config.json -> [{"n", "ip", "port", "sensor_order"}]. "thermostats" is a list (position =
+    ThermostatAddress); without it, the 1.2 keys thermostat_ip / thermostat_port / sensor_order."""
+    raw = cfg.get("thermostats") or [{"ip": cfg.get("thermostat_ip"), "port": cfg.get("thermostat_port", 80),
+                                      "sensor_order": cfg.get("sensor_order") or []}]
+    if not isinstance(raw, list):
+        raise ValueError("thermostats must be a list, e.g. [{\"ip\": \"192.168.1.50\"}]")
+    if len(raw) > MAX_THERMOSTATS:
+        raise ValueError(f"at most {MAX_THERMOSTATS} thermostats per bridge")
+    out, seen = [], {}
+    for n, t in enumerate(raw, 1):
+        if isinstance(t, str):
+            t = {"ip": t}
+        if not isinstance(t, dict) or not str(t.get("ip") or "").strip():
+            raise ValueError(f"thermostat {n} has no \"ip\"")
+        ip = str(t["ip"]).strip()
+        if ip in seen:
+            raise ValueError(f"thermostats {seen[ip]} and {n} have the same ip {ip}")
+        seen[ip] = n
+        out.append({"n": n, "ip": ip, "port": int(t.get("port") or 80),
+                    "sensor_order": t.get("sensor_order") or []})
+    return out
+
+
+def file_for(home: Path, name: str, n: int) -> Path:
+    """pairing.json for thermostat 1 (as in 1.2), pairing-2.json for thermostat 2, ..."""
+    return home / (f"{name}.json" if n == 1 else f"{name}-{n}.json")
+
+
+class _Prefix(logging.LoggerAdapter):
+    def process(self, msg, kwargs):
+        return self.extra["p"] + str(msg), kwargs
+
+
+class Thermostat:
+    """One paired thermostat: its HomeKit session, model, pending command and saved setpoints.
+    It publishes thermostat-1 key names; publish() renames them for its address."""
+
+    def __init__(self, bridge, tc, multi=False):
+        self.bridge, self.cfg, self.home = bridge, bridge.cfg, bridge.home
+        self.n, self.ip, self.port, self.sensor_order = tc["n"], tc["ip"], tc["port"], tc["sensor_order"]
+        self.tag = f"thermostat {self.n}: " if multi else ""
+        self.log = _Prefix(log, {"p": self.tag})
         self.model: Model | None = None
         self.pairing = None
         self.azc = None
@@ -536,19 +607,24 @@ class Bridge:
         self.shown_online = True
         self.pending = None            # (expected {(aid,iid): value}, deadline, label)
         self.cmd_lock = asyncio.Lock()
-        self.rejected_logged = {}
-        self.numbers_path = home / "sensors.json"
-        self.allow_any, self.allow_local, self.allow_nets = parse_allowed(cfg.get("allowed_clients", "auto"))
-        self.max_sensors = max(1, min(16, int(cfg.get("max_sensors", 4))))
-        self.stopping = None
-        self.wake = None
-        self.tasks = set()
+        self.wake = asyncio.Event()
+        self.shown = {}                # last published values, thermostat-1 key names
+        self.pairing_path = file_for(self.home, "pairing", self.n)
+        self.numbers_path = file_for(self.home, "sensors", self.n)
+        self.accessories_path = file_for(self.home, "accessories", self.n)
+        self.sys = {"SYS_ONLINE": 0, "SYS_LIVE": 0, "SYS_ERROR": "",
+                    "SYS_PAIRED": 1 if self.pairing_path.exists() else 0}
+        self.sensor_count = 0
         # Setpoints for the mode the thermostat isn't in (e.g. the heat setpoint from Savant's
         # scheduler while in Cool mode). The T10 ignores those over HomeKit, so they are kept here
         # and written when the thermostat switches to that mode. {"heat": 68, "cool": 76, "units": "F"}
-        self.saved_path = home / "setpoints.json"
+        self.saved_path = file_for(self.home, "setpoints", self.n)
         self.saved = self.load_saved()
         self.last_mode = None
+
+    @property
+    def pair_cmd(self):
+        return "t10link pair" + ("" if self.n == 1 else f" {self.n}")
 
     def load_saved(self):
         try:
@@ -561,7 +637,7 @@ class Bridge:
         try:
             self.saved_path.write_text(json.dumps(self.saved))
         except OSError as e:
-            log.warning("could not save %s: %s", self.saved_path, e)
+            self.log.warning("could not save %s: %s", self.saved_path, e)
 
     def saved_value(self, kind, units):
         if self.saved.get("units") == units and self.saved.get(kind) is not None:
@@ -570,31 +646,32 @@ class Bridge:
 
     # -- publishing ------------------------------------------------------
     async def publish(self, updates):
-        lines = []
+        out, sys_changed = {}, False
         for k, v in updates.items():
-            if isinstance(v, bool):
-                v = "true" if v else "false"
-            v = ascii_text(v)
-            if self.values.get(k) != v:
-                self.values[k] = v
-                lines.append(f"{k}={v}\n")
-        if lines and self.clients:
-            data = "".join(lines).encode(SAVANT_ENCODING, "replace")
-            for w in list(self.clients):
-                try:
-                    w.write(data)
-                except Exception:
-                    self.clients.discard(w)
-            for w in list(self.clients):
-                try:
-                    await asyncio.wait_for(w.drain(), 5)
-                except Exception:
-                    self.clients.discard(w)
+            if k == "SYS_LAST_COMMAND":
+                out[k] = f"{self.tag}{v}" if v != "" else ""
+            elif k == "SYS_LAST_UPDATE":
+                out[k] = v
+            elif k.startswith("SYS_"):
+                self.sys[k] = v
+                sys_changed = True
+                if k == "SYS_PAIRED":
+                    self.shown["T_PAIRED"] = v
+                    out[key_for(self.n, "T_PAIRED")] = v
+            else:
+                if k == "T_SENSOR_COUNT" and v != self.sensor_count:
+                    self.sensor_count = v
+                    sys_changed = True
+                self.shown[k] = v
+                out[key_for(self.n, k)] = v
+        if sys_changed:
+            out.update(self.bridge.sys_summary())
+        await self.bridge.publish(out)
 
     async def publish_model(self):
         if not self.model:
             return
-        st = compute_states(self.model, self.cfg.get("units"), self.shown_online, self.max_sensors)
+        st = compute_states(self.model, self.cfg.get("units"), self.shown_online, self.bridge.max_sensors)
         # show a saved (not yet applied) setpoint for the mode the thermostat isn't in
         raw_mode = MODES.get(self.model.t(C_TGT_STATE))
         u = st["T_UNITS"]
@@ -606,17 +683,15 @@ class Bridge:
                     st[k] = fmt(v)
         st["T_SAVED_SETPOINTS"] = ", ".join(
             f"{k} {self.saved_value(k, u)}" for k in ("heat", "cool") if self.saved_value(k, u) is not None)
-        before =(self.values.get("T_MODE"), self.values.get("T_HEAT_SETPOINT"), self.values.get("T_COOL_SETPOINT"))
+        before = tuple(ascii_text(self.shown[k]) if k in self.shown else None
+                       for k in ("T_MODE", "T_HEAT_SETPOINT", "T_COOL_SETPOINT"))
         after = (st["T_MODE"], st["T_HEAT_SETPOINT"], st["T_COOL_SETPOINT"])
         if before[0] is not None and before != after and self.shown_online:
             st["T_LAST_CHANGE"] = now_text()
         await self.publish(st)
 
     def spawn(self, coro):
-        t = asyncio.ensure_future(coro)
-        self.tasks.add(t)
-        t.add_done_callback(self.tasks.discard)
-        return t
+        return self.bridge.spawn(coro)
 
     # -- HomeKit ---------------------------------------------------------
     def on_event(self, event: dict):
@@ -628,7 +703,7 @@ class Bridge:
         self.spawn(self.after_values())
 
     def on_available(self, available: bool):
-        log.info("thermostat %s", "connected" if available else "disconnected")
+        self.log.info("thermostat %s", "connected" if available else "disconnected")
         self.spawn(self.set_online(bool(available)))
 
     async def set_online(self, ok: bool, why=""):
@@ -660,7 +735,7 @@ class Bridge:
         for kind, verb, uses in (("heat", "SETHEAT", ("Heat", "Auto")), ("cool", "SETCOOL", ("Cool", "Auto"))):
             v = self.saved_value(kind, u)
             if v is not None and mode in uses:
-                log.info("thermostat now in %s: applying the saved %s setpoint %s %s", mode, kind, v, u)
+                self.log.info("thermostat now in %s: applying the saved %s setpoint %s %s", mode, kind, v, u)
                 self.spawn(self.do_write(verb, str(v), f"saved {kind} setpoint {v} {u} (mode now {mode})"))
 
     async def save_setpoint(self, kind, verb, arg, line):
@@ -690,13 +765,19 @@ class Bridge:
         self.store_saved()
         mode = MODES.get(m.t(C_TGT_STATE), "an unknown mode")
         msg = f"{kind} setpoint {val} {u}: saved, applied when the thermostat switches to {kind.title()} or Auto (now {mode})"
-        log.info("Savant: %s -> %s", line, msg)
+        self.log.info("Savant: %s -> %s", line, msg)
         await self.publish({"T_ERROR": "", "T_PENDING": "", "SYS_LAST_COMMAND": msg})
         await self.publish_model()
 
     def clear_saved(self, kind):
         if self.saved.pop(kind, None) is not None:
             self.store_saved()
+
+    async def clear_all_saved(self):
+        self.saved = {}
+        self.store_saved()
+        await self.publish({"SYS_LAST_COMMAND": "saved setpoints cleared"})
+        await self.publish_model()
 
     def defer_kind(self, verb):
         """'heat' / 'cool' when this command targets a setpoint the current mode doesn't use."""
@@ -744,7 +825,7 @@ class Bridge:
             return
         if time.monotonic() - matched_at >= 2:
             self.pending = None
-            log.info("confirmed: %s", label)
+            self.log.info("confirmed: %s", label)
             await self.publish({"T_PENDING": "", "T_ERROR": "", "SYS_LAST_COMMAND": f"{label}: confirmed"})
 
     async def read_all(self):
@@ -756,39 +837,39 @@ class Bridge:
         await self.after_values()
 
     async def connect(self):
-        data = hap_local.load_pairing(self.home / "pairing.json", self.cfg["thermostat_ip"], self.cfg.get("thermostat_port"))
+        data = hap_local.load_pairing(self.pairing_path, self.ip, self.port)
         if not data:
-            await self.publish({"SYS_PAIRED": 0, "SYS_ERROR": "not paired: run  t10link pair  on the bridge machine"})
+            await self.publish({"SYS_PAIRED": 0, "SYS_ERROR": f"not paired: run  {self.pair_cmd}  on the bridge machine"})
             return False
         await self.publish({"SYS_PAIRED": 1})
         controller, self.azc = await hap_local.make_controller()
-        self.pairing = controller.load_pairing("t10link", data)
+        self.pairing = controller.load_pairing(f"t10link-{self.n}", data)
         self.pairing.dispatcher_connect(self.on_event)
         self.pairing.dispatcher_availability_changed(self.on_available)
         accs = await asyncio.wait_for(self.pairing.list_accessories_and_characteristics(), 60)
-        (self.home / "accessories.json").write_text(json.dumps(accs, indent=1))
+        self.accessories_path.write_text(json.dumps(accs, indent=1))
         saved = {}
         if self.numbers_path.exists():
             try:
                 saved = json.loads(self.numbers_path.read_text())
             except ValueError:
                 saved = {}
-        self.model = Model(accs, self.cfg.get("sensor_order"), saved)
+        self.model = Model(accs, self.sensor_order, saved)
         nums = {s["serial"]: self.model.numbers[s["serial"]] for s in self.model.sensors}
         if nums != {k: v for k, v in saved.items() if k in nums}:
             self.numbers_path.write_text(json.dumps({**saved, **nums}, indent=1))
-        log.info("thermostat %s (%s, firmware %s); room sensors: %s", self.model.info.get("name"),
-                 self.model.info.get("model"), self.model.info.get("firmware"),
-                 ", ".join(f"{self.model.numbers[s['serial']]}={s['name']}" for s in self.model.sensors) or "none")
+        self.log.info("thermostat %s at %s (%s, firmware %s); room sensors: %s", self.model.info.get("name"), self.ip,
+                      self.model.info.get("model"), self.model.info.get("firmware"),
+                      ", ".join(f"{self.model.numbers[s['serial']]}={s['name']}" for s in self.model.sensors) or "none")
         ev = self.model.evented()
         try:
             status = await asyncio.wait_for(self.pairing.subscribe(ev), 30)
             bad = [k for k, v in (status or {}).items() if v.get("status")]
             await self.publish({"SYS_LIVE": 0 if (bad and len(bad) == len(ev)) else 1})
             if bad:
-                log.warning("events refused for %s", bad)
+                self.log.warning("events refused for %s", bad)
         except Exception as e:
-            log.warning("event subscription failed (%s): polling only", e)
+            self.log.warning("event subscription failed (%s): polling only", e)
             await self.publish({"SYS_LIVE": 0})
         await self.set_online(True)
         await self.read_all()
@@ -796,7 +877,8 @@ class Bridge:
 
     async def hap_loop(self):
         backoff = 5
-        while not self.stopping.is_set():
+        stopping = self.bridge.stopping
+        while not stopping.is_set():
             try:
                 if self.pairing is None:
                     if not await self.connect():
@@ -804,7 +886,7 @@ class Bridge:
                         continue
                     backoff = 5
                 await self.sleep(int(self.cfg["poll_seconds"]))
-                if self.stopping.is_set():
+                if stopping.is_set():
                     break
                 await self.read_all()
                 if not self.online:
@@ -813,7 +895,7 @@ class Bridge:
                 raise
             except Exception as e:
                 msg = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
-                log.warning("HomeKit: %s", msg)
+                self.log.warning("HomeKit: %s", msg)
                 if self.online or self.offline_since is None:
                     await self.set_online(False, f"thermostat unreachable: {ascii_text(msg, 120)}")
                 if self.model is None and self.pairing is not None:
@@ -829,7 +911,7 @@ class Bridge:
         if self.offline_since and self.shown_online and \
                 time.monotonic() - self.offline_since > float(self.cfg["offline_grace_seconds"]):
             self.shown_online = False
-            log.warning("thermostat offline for over %ss", self.cfg["offline_grace_seconds"])
+            self.log.warning("thermostat offline for over %ss", self.cfg["offline_grace_seconds"])
             await self.publish_model()
 
     async def sleep(self, secs):
@@ -887,10 +969,10 @@ class Bridge:
                     self.clear_saved("cool")
                 writes, expected, label = plan_write(self.model, verb, arg, self.cfg.get("units"))
             except ValueError as e:
-                log.warning("%s: %s", line, e)
+                self.log.warning("%s: %s", line, e)
                 await self.publish({"T_ERROR": ascii_text(e), "SYS_LAST_COMMAND": f"{line}: {ascii_text(e)}"})
                 return
-            log.info("Savant: %s -> %s", line, label)
+            self.log.info("Savant: %s -> %s", line, label)
             await self.publish({"T_PENDING": label, "T_ERROR": "", "SYS_LAST_COMMAND": f"{label}: sent"})
             deadline = time.monotonic() + float(self.cfg["confirm_seconds"])
             self.pending = (expected, deadline, label)
@@ -902,7 +984,7 @@ class Bridge:
             except Exception as e:
                 self.pending = None
                 msg = ascii_text(f"{label} failed: {e}")
-                log.warning(msg)
+                self.log.warning(msg)
                 await self.publish({"T_PENDING": "", "T_ERROR": msg, "SYS_LAST_COMMAND": msg})
                 return
             # Never assume: read back until the thermostat reports the new value.
@@ -913,7 +995,7 @@ class Bridge:
                 try:
                     await self.read_all()
                 except Exception as e:
-                    log.debug("confirm read: %s", e)
+                    self.log.debug("confirm read: %s", e)
                 if not self.pending or self.pending[2] != label:
                     return
                 if time.monotonic() > deadline:
@@ -921,31 +1003,121 @@ class Bridge:
             if self.pending and self.pending[2] == label:
                 self.pending = None
                 msg = f"{label}: not confirmed by the thermostat within {self.cfg['confirm_seconds']} s"
-                log.warning(msg)
+                self.log.warning(msg)
                 await self.publish({"T_PENDING": "", "T_ERROR": msg, "SYS_LAST_COMMAND": msg})
 
+
+def parse_command(line):
+    """"@2:SETHEAT:70" / "@2 SETHEAT 70" / "SETHEAT 70" -> (address text or None, VERB, arg)."""
+    line = line.strip()
+    a = None
+    if line.startswith("@"):
+        a, line = re.match(r"@([^\s:]*)[\s:]*(.*)", line, re.S).groups()
+    verb, arg = re.match(r"([^\s:]*)[\s:]?(.*)", line.strip(), re.S).groups()
+    return a, verb.upper(), arg.strip()
+
+
+WRITE_VERBS = ("SETMODE", "SETHEAT", "SETCOOL", "SETTEMP", "INCHEAT", "DECHEAT",
+               "INCCOOL", "DECCOOL", "INCTEMP", "DECTEMP", "RESETFILTER")
+
+
+class Bridge:
+    """The Savant side: TCP server, the bridge-wide SYS_* states, and command routing by address."""
+
+    def __init__(self, cfg, home: Path):
+        self.cfg, self.home = cfg, home
+        self.values = {}
+        self.clients = set()
+        self.rejected_logged = {}
+        self.allow_any, self.allow_local, self.allow_nets = parse_allowed(cfg.get("allowed_clients", "auto"))
+        self.max_sensors = max(1, min(16, int(cfg.get("max_sensors", 4))))
+        self.stopping = None
+        self.tasks = set()
+        tcs = thermostat_configs(cfg)
+        self.thermostats = [Thermostat(self, tc, multi=len(tcs) > 1) for tc in tcs]
+        self.by_n = {t.n: t for t in self.thermostats}
+
+    # -- publishing ------------------------------------------------------
+    async def publish(self, updates):
+        lines = []
+        for k, v in updates.items():
+            if isinstance(v, bool):
+                v = "true" if v else "false"
+            v = ascii_text(v)
+            if self.values.get(k) != v:
+                self.values[k] = v
+                lines.append(f"{k}={v}\n")
+        if lines and self.clients:
+            data = "".join(lines).encode(SAVANT_ENCODING, "replace")
+            for w in list(self.clients):
+                try:
+                    w.write(data)
+                except Exception:
+                    self.clients.discard(w)
+            for w in list(self.clients):
+                try:
+                    await asyncio.wait_for(w.drain(), 5)
+                except Exception:
+                    self.clients.discard(w)
+
+    def sys_summary(self):
+        """Bridge-wide health from every thermostat's own SYS_* values. With one thermostat this
+        is exactly that thermostat's values, as in 1.2."""
+        ts = self.thermostats
+        errs = [t.tag + str(t.sys["SYS_ERROR"]) for t in ts if t.sys.get("SYS_ERROR")]
+        every = lambda k: 1 if all(int(t.sys.get(k) or 0) == 1 for t in ts) else 0  # noqa: E731
+        return {"SYS_ONLINE": every("SYS_ONLINE"), "SYS_PAIRED": every("SYS_PAIRED"), "SYS_LIVE": every("SYS_LIVE"),
+                "SYS_ERROR": "; ".join(errs), "SYS_SENSOR_COUNT": sum(int(t.sensor_count or 0) for t in ts),
+                "SYS_THERMOSTAT_COUNT": len(ts)}
+
+    def spawn(self, coro):
+        t = asyncio.ensure_future(coro)
+        self.tasks.add(t)
+        t.add_done_callback(self.tasks.discard)
+        return t
+
+    def wake_all(self):
+        for t in self.thermostats:
+            t.wake.set()
+
+    # -- commands --------------------------------------------------------
     async def handle_line(self, line, writer):
+        """[@N:]VERB[:ARG] or [@N ]VERB [ARG]. @N picks thermostat N (Savant's ThermostatAddress;
+        blank = 1); without it, thermostat 1 (bridge-wide verbs: all of them). The profile uses
+        ":" so no command parameter needs a space."""
         line = line.strip()
         if not line:
             return
-        verb, _, arg = line.partition(" ")
-        verb = verb.upper()
+        a, verb, arg = parse_command(line)
+        t = None
+        if a is not None:
+            try:
+                t = self.by_n.get(int(a) if a else 1)
+            except ValueError:
+                t = None
+            if t is None:
+                writer.write(f"SYS_ERROR=no thermostat {ascii_text(a, 10)} in config.json "
+                             f"({len(self.thermostats)} configured)\n".encode(SAVANT_ENCODING, "replace"))
+                await writer.drain()
+                return
+            if not verb:
+                return
+        target = t or self.thermostats[0]
         if verb == "PING":
             writer.write(b"PONG\n")
         elif verb == "DUMP":
             writer.write("".join(f"{k}={v}\n" for k, v in self.values.items()).encode(SAVANT_ENCODING, "replace"))
         elif verb in ("REFRESH", "STATUS"):
-            self.wake.set()
+            if t:
+                t.wake.set()
+            else:
+                self.wake_all()
         elif verb == "SETRANGE":
-            self.spawn(self.do_range(arg, line))
+            self.spawn(target.do_range(arg, line))
         elif verb == "CLEARSAVED":
-            self.saved = {}
-            self.store_saved()
-            await self.publish({"SYS_LAST_COMMAND": "saved setpoints cleared"})
-            await self.publish_model()
-        elif verb in ("SETMODE", "SETHEAT", "SETCOOL", "SETTEMP", "INCHEAT", "DECHEAT",
-                      "INCCOOL", "DECCOOL", "INCTEMP", "DECTEMP", "RESETFILTER"):
-            self.spawn(self.do_write(verb, arg.replace(",", " ").strip() if verb != "SETRANGE" else arg, line))
+            await target.clear_all_saved()
+        elif verb in WRITE_VERBS:
+            self.spawn(target.do_write(verb, arg.replace(",", " ").strip(), line))
         else:
             writer.write(f"SYS_ERROR=unknown command {ascii_text(verb, 40)}\n".encode(SAVANT_ENCODING, "replace"))
         await writer.drain()
@@ -1006,37 +1178,45 @@ class Bridge:
     def request_stop(self, why):
         self.stop_reason = why
         self.stopping.set()
-        self.wake.set()
+        self.wake_all()
+
+    async def start(self):
+        """Initial states; the service and the tests both start here."""
+        self.stopping = asyncio.Event()
+        self.stop_reason = ""
+        await self.publish({"SYS_VERSION": VERSION, "SYS_LAST_COMMAND": "", "SYS_LAST_UPDATE": "",
+                            "SYS_REJECTED_CLIENT": "", **self.sys_summary()})
+        for t in self.thermostats:
+            await t.publish({"T_IP": t.ip, "T_PAIRED": t.sys["SYS_PAIRED"], "T_PENDING": "", "T_ERROR": "",
+                             "T_LAST_CHANGE": ""})
 
     async def run(self):
         loop = asyncio.get_running_loop()
-        self.stopping, self.wake = asyncio.Event(), asyncio.Event()
-        self.stop_reason = ""
+        await self.start()
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             try:
                 loop.add_signal_handler(sig, self.request_stop, "signal " + sig.name)
             except (NotImplementedError, RuntimeError, ValueError):
                 pass
-        await self.publish({"SYS_VERSION": VERSION, "SYS_ONLINE": 0, "SYS_LIVE": 0, "SYS_ERROR": "",
-                            "SYS_LAST_COMMAND": "", "SYS_LAST_UPDATE": "", "SYS_REJECTED_CLIENT": "",
-                            "SYS_PAIRED": 1 if (self.home / "pairing.json").exists() else 0,
-                            "T_PENDING": "", "T_ERROR": "", "T_LAST_CHANGE": ""})
         srv = await asyncio.start_server(self.handle_tcp, "0.0.0.0", int(self.cfg["tcp_port"]))
         log.info("Savant TCP on :%s, pid %s", self.cfg["tcp_port"], os.getpid())
+        log.info("thermostats: %s", ", ".join(f"{t.n}={t.ip}" for t in self.thermostats))
         who = (["this machine"] if self.allow_local else []) + [str(n) for n in self.allow_nets]
         log.info("accepting Savant connections from: %s", "anyone" if self.allow_any else ", ".join(who) or "localhost only")
-        task = asyncio.ensure_future(self.hap_loop())
+        loops = [asyncio.ensure_future(t.hap_loop()) for t in self.thermostats]
         await self.stopping.wait()
         log.info("shutting down (%s)", self.stop_reason)
-        task.cancel()
+        for task in loops:
+            task.cancel()
         srv.close()
         for w in list(self.clients):
             try:
                 w.close()
             except Exception:
                 pass
-        await asyncio.gather(task, return_exceptions=True)
-        await self.close_hap()
+        await asyncio.gather(*loops, return_exceptions=True)
+        for t in self.thermostats:
+            await t.close_hap()
         log.info("stopped")
         return 0
 
@@ -1044,24 +1224,45 @@ class Bridge:
 # ---------------------------------------------------------------------------
 # CLI: pair / unpair / dump
 # ---------------------------------------------------------------------------
-def nudge_service(cfg, verb="REFRESH"):
+def nudge_service(cfg, n=1, verb="REFRESH"):
     try:
         with socket.create_connection(("127.0.0.1", int(cfg["tcp_port"])), 3) as s:
-            s.sendall(verb.encode() + b"\n")
+            s.sendall(f"@{n} {verb}\n".encode())
         return True
     except OSError:
         return False
 
 
-async def cli_pair(cfg, home: Path):
-    ip = cfg["thermostat_ip"]
-    out = home / "pairing.json"
+def pick_thermostat(cfg, home: Path, n, purpose):
+    """n from the command line (None = not given) -> that thermostat's config entry."""
+    tcs = thermostat_configs(cfg)
+    if n is None or n == 0:
+        if purpose == "pair":
+            unpaired = [tc for tc in tcs if not file_for(home, "pairing", tc["n"]).exists()]
+            if not unpaired:
+                which = "it is" if len(tcs) == 1 else f"all {len(tcs)} are"
+                raise SystemExit(f"Nothing to pair: {which} already paired (t10link unpair N to start over).")
+            return unpaired[0]
+        if len(tcs) > 1 and purpose == "unpair":
+            raise SystemExit(f"Which thermostat? {len(tcs)} are configured: t10link unpair 1 ... t10link unpair {len(tcs)}")
+        return tcs[0]
+    if not 1 <= n <= len(tcs):
+        raise SystemExit(f"No thermostat {n}: config.json lists {len(tcs)} (1-{len(tcs)}).")
+    return tcs[n - 1]
+
+
+async def cli_pair(cfg, home: Path, n=None):
+    tc = pick_thermostat(cfg, home, n, "pair")
+    ip, out = tc["ip"], file_for(home, "pairing", tc["n"])
+    cmd_n = "" if tc["n"] == 1 else f" {tc['n']}"
     if out.exists():
-        raise SystemExit(f"{out} already exists: this bridge is already paired. Unpair first (t10link unpair).")
-    print(f"Looking for the thermostat's HomeKit record at {ip} (it may take a few seconds to wake) ...")
+        raise SystemExit(f"{out} already exists: thermostat {tc['n']} is already paired. Unpair first (t10link unpair{cmd_n}).")
+    many = len(thermostat_configs(cfg)) > 1
+    print(f"{'Thermostat ' + str(tc['n']) + ': l' if many else 'L'}ooking for the thermostat's HomeKit record at {ip} "
+          "(it may take a few seconds to wake) ...")
     rec = await asyncio.get_running_loop().run_in_executor(None, lambda: hap_local.query_hap_record(ip, tries=25))
     if not rec:
-        raise SystemExit(f"No HomeKit answer from {ip}. Check thermostat_ip in config.json and that it is on Wi-Fi.")
+        raise SystemExit(f"No HomeKit answer from {ip}. Check the thermostat's ip in config.json and that it is on Wi-Fi.")
     print(f"Found {rec['name']} ({rec.get('md', '?')}), HomeKit id {rec['id']}, "
           f"{'NOT paired' if str(rec.get('sf')) != '0' else 'already PAIRED to another controller'}.")
     if str(rec.get("sf")) == "0":
@@ -1082,25 +1283,30 @@ async def cli_pair(cfg, home: Path):
                          "A wrong code fails harmlessly; after several wrong tries the thermostat "
                          "locks pairing for a while.")
     hap_local.write_private_json(out, data)
-    print(f"\nPaired. Long-term keys saved to {out} (mode 600). The setup code was not saved.")
-    if nudge_service(cfg):
+    print(f"\nPaired thermostat {tc['n']}. Long-term keys saved to {out} (mode 600). The setup code was not saved.")
+    if nudge_service(cfg, tc["n"]):
         print("Told the running bridge to connect.")
+    left = [t["n"] for t in thermostat_configs(cfg) if not file_for(home, "pairing", t["n"]).exists()]
+    if left:
+        print(f"Still to pair: thermostat {', '.join(map(str, left))}  (t10link pair {left[0]})")
 
 
-async def open_pairing(cfg, home: Path):
-    data = hap_local.load_pairing(home / "pairing.json", cfg["thermostat_ip"], cfg.get("thermostat_port"))
+async def open_pairing(cfg, home: Path, tc):
+    data = hap_local.load_pairing(file_for(home, "pairing", tc["n"]), tc["ip"], tc["port"])
     if not data:
-        raise SystemExit("not paired: run  t10link pair  first")
+        raise SystemExit(f"thermostat {tc['n']} is not paired: run  t10link pair{'' if tc['n'] == 1 else ' ' + str(tc['n'])}  first")
     controller, azc = await hap_local.make_controller()
     p = controller.load_pairing("t10link-cli", data)
     return p, azc
 
 
-async def cli_dump(cfg, home: Path, raw=False):
-    p, azc = await open_pairing(cfg, home)
+async def cli_dump(cfg, home: Path, raw=False, n=None):
+    tc = pick_thermostat(cfg, home, n, "dump")
+    p, azc = await open_pairing(cfg, home, tc)
+    out = file_for(home, "accessories", tc["n"])
     try:
         accs = await asyncio.wait_for(p.list_accessories_and_characteristics(), 60)
-        (home / "accessories.json").write_text(json.dumps(accs, indent=1))
+        out.write_text(json.dumps(accs, indent=1))
         if raw:
             print(json.dumps(accs, indent=1))
             return
@@ -1112,29 +1318,31 @@ async def cli_dump(cfg, home: Path, raw=False):
                     extra = {k: c[k] for k in ("minValue", "maxValue", "minStep", "valid-values", "unit") if k in c}
                     print(f"    {c['iid']:>4} {short_type(c['type'])[:12]:12} {','.join(c.get('perms', [])):10} "
                           f"value={c.get('value')!r} {extra if extra else ''}")
-        m = Model(accs, cfg.get("sensor_order"))
-        print("\nAs Savant sees it:")
+        m = Model(accs, tc["sensor_order"])
+        print(f"\nAs Savant sees thermostat {tc['n']}:")
         for k, v in compute_states(m, cfg.get("units"), True, int(cfg.get("max_sensors", 4))).items():
             if not k.startswith(("Is", "Thermostat")):
-                print(f"  {k}={v}")
-        print(f"\nRaw JSON saved to {home / 'accessories.json'}")
+                print(f"  {key_for(tc['n'], k)}={v}")
+        print(f"\nRaw JSON saved to {out}")
     finally:
         await p.close()
         await azc.async_close()
 
 
-async def cli_unpair(cfg, home: Path):
-    p, azc = await open_pairing(cfg, home)
+async def cli_unpair(cfg, home: Path, n=None):
+    tc = pick_thermostat(cfg, home, n, "unpair")
+    p, azc = await open_pairing(cfg, home, tc)
     try:
         await asyncio.wait_for(p.remove_pairing(p.pairing_data["iOSPairingId"]), 30)
-        print("Removed this bridge's pairing from the thermostat.")
+        print(f"Removed this bridge's pairing from thermostat {tc['n']} ({tc['ip']}).")
     except Exception as e:
         print(f"Could not remove the pairing on the thermostat ({e}); deleting the local keys anyway.")
     finally:
         await p.close()
         await azc.async_close()
-    (home / "pairing.json").unlink(missing_ok=True)
-    print("Deleted pairing.json. The thermostat can now be paired again (restart the service to drop its session).")
+    path = file_for(home, "pairing", tc["n"])
+    path.unlink(missing_ok=True)
+    print(f"Deleted {path.name}. The thermostat can now be paired again (restart the service to drop its session).")
 
 
 def load_config(path):
@@ -1147,6 +1355,10 @@ def load_config(path):
         parse_allowed(cfg.get("allowed_clients", "auto"))
     except ValueError as e:
         raise SystemExit(f"config.json allowed_clients: {e}")
+    try:
+        thermostat_configs(cfg)
+    except (ValueError, TypeError) as e:
+        raise SystemExit(f"config.json thermostats: {e}")
     return cfg
 
 
@@ -1155,17 +1367,19 @@ def main():
     ap.add_argument("-c", "--config", default=str(Path(__file__).parent / "config.json"))
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("-l", "--logfile", help="log to a rotating file (1 MB x 3) instead of the console")
-    ap.add_argument("--pair", action="store_true", help="one-time HomeKit pairing")
-    ap.add_argument("--unpair", action="store_true", help="remove this bridge's pairing")
-    ap.add_argument("--dump", action="store_true", help="print the thermostat's HomeKit services")
+    ap.add_argument("--pair", nargs="?", type=int, const=0, metavar="N",
+                    help="one-time HomeKit pairing of thermostat N (default: the first one not paired)")
+    ap.add_argument("--unpair", nargs="?", type=int, const=0, metavar="N", help="remove this bridge's pairing from thermostat N")
+    ap.add_argument("--dump", nargs="?", type=int, const=0, metavar="N", help="print thermostat N's HomeKit services (default 1)")
     ap.add_argument("--raw", action="store_true", help="with --dump: raw JSON")
     ap.add_argument("--version", action="version", version=VERSION)
     a = ap.parse_args()
     cfg = load_config(a.config)
     home = Path(a.config).resolve().parent
-    if a.pair or a.unpair or a.dump:
+    if a.pair is not None or a.unpair is not None or a.dump is not None:
         logging.basicConfig(level=logging.DEBUG if a.verbose else logging.WARNING, format="%(levelname)s %(message)s")
-        asyncio.run(cli_pair(cfg, home) if a.pair else cli_unpair(cfg, home) if a.unpair else cli_dump(cfg, home, a.raw))
+        asyncio.run(cli_pair(cfg, home, a.pair) if a.pair is not None else
+                    cli_unpair(cfg, home, a.unpair) if a.unpair is not None else cli_dump(cfg, home, a.raw, a.dump))
         return
     level = logging.DEBUG if a.verbose else getattr(logging, str(cfg.get("log_level", "INFO")).upper(), logging.INFO)
     handlers = [logging.handlers.RotatingFileHandler(a.logfile, maxBytes=1000000, backupCount=3, encoding="utf-8")] \

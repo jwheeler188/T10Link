@@ -1,7 +1,7 @@
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=us-ascii">
-<title>T10Link 1.2.0</title>
+<title>T10Link 1.3.0</title>
 <style>
 body { font-family: -apple-system, Helvetica, Arial, sans-serif; font-size: 13px; line-height: 1.45; margin: 16px 20px; color: #222; max-width: 980px; }
 h1 { font-size: 22px; margin: 0 0 6px; }
@@ -21,8 +21,8 @@ hr { border: 0; border-top: 1px solid #ddd; margin: 18px 0; }
 </head>
 <body>
 <h1 id="t10link-manual">T10Link manual</h1>
-<p>T10Link brings a <b>Honeywell Home T9 / T10 / T10 Pro</b> thermostat into Savant <b>locally</b>. It uses the Apple HomeKit protocol on your own network, so it doesn't need the Honeywell/Resideo cloud or a Resideo account, and it keeps working when the internet is down.</p>
-<p>The <b>T10Link bridge</b> is a small service that runs on the <b>Savant host Mac</b> itself, another Mac, a <b>Raspberry Pi</b> or any Linux box that's always on. It is paired with the thermostat over HomeKit, and it talks to the Savant host over a plain TCP connection on port <b>2400</b>.</p>
+<p>T10Link brings <b>Honeywell Home T9 / T10 / T10 Pro</b> thermostats into Savant <b>locally</b>. It uses the Apple HomeKit protocol on your own network, so it doesn't need the Honeywell/Resideo cloud or a Resideo account, and it keeps working when the internet is down.</p>
+<p>The <b>T10Link bridge</b> is a small service that runs on the <b>Savant host Mac</b> itself, another Mac, a <b>Raspberry Pi</b> or any Linux box that's always on. It is paired with each thermostat over HomeKit, and it talks to the Savant host over a plain TCP connection on port <b>2400</b>. One bridge and one Blueprint component handle up to 8 thermostats (16 with a regenerated profile).</p>
 <div class="note"><p>Not affiliated with or endorsed by Honeywell, Resideo or Savant Systems, Inc.</p></div>
 <h2 id="contents">Contents</h2>
 <ul>
@@ -31,6 +31,7 @@ hr { border: 0; border-top: 1px solid #ddd; margin: 18px 0; }
 <li><a href="#install-the-bridge">Install the bridge</a></li>
 <li><a href="#pair-the-thermostat">Pair the thermostat</a></li>
 <li><a href="#blueprint-setup">Blueprint setup</a></li>
+<li><a href="#several-thermostats">Several thermostats</a></li>
 <li><a href="#using-it-in-savant">Using it in Savant</a></li>
 <li><a href="#the-t10link-command">The t10link command</a></li>
 <li><a href="#troubleshooting">Troubleshooting</a></li>
@@ -77,12 +78,12 @@ sudo ./macos/install.sh</pre>
 <p>The installer prints the IP address and port to use in Blueprint. Then edit <code>config.json</code> (<code>/opt/t10link/config.json</code> on Linux, <code>~/T10Link/config.json</code> on a Mac):</p>
 <table>
 <tr><th>Setting</th><th>Meaning</th></tr>
-<tr><td><code>thermostat_ip</code></td><td>The thermostat's IP address (Menu &gt; Wi-Fi on the thermostat shows it)</td></tr>
+<tr><td><code>thermostats</code></td><td>One entry per thermostat: <code>[{"ip": "192.168.1.50"}]</code>. <code>ip</code> is the thermostat's IP address (Menu &gt; Wi-Fi on the thermostat shows it). Optional per entry: <code>port</code> (80) and <code>sensor_order</code>. The position in the list is the thermostat's number, 1, 2, 3 ... (see <a href="#several-thermostats">Several thermostats</a>). Configs from 1.2 with <code>thermostat_ip</code> still work</td></tr>
 <tr><td><code>allowed_clients</code></td><td>Who may connect. <code>["auto"]</code> (only this machine) is right when the bridge runs on the Savant host. Otherwise <code>["auto", "&lt;Savant host IP&gt;"]</code></td></tr>
 <tr><td><code>tcp_port</code></td><td>2400 (the profile expects 2400)</td></tr>
 <tr><td><code>units</code></td><td><code>auto</code> (the thermostat's display units), <code>F</code> or <code>C</code></td></tr>
-<tr><td><code>max_sensors</code></td><td>Room-sensor slots (4; the profile has states for 4)</td></tr>
-<tr><td><code>sensor_order</code></td><td>Optional: fix sensor numbers by name, e.g. <code>["Master Bedroom Air Sensor 01"]</code></td></tr>
+<tr><td><code>max_sensors</code></td><td>Room-sensor slots per thermostat (4; the profile has states for 4)</td></tr>
+<tr><td><code>sensor_order</code> (in a <code>thermostats</code> entry)</td><td>Optional: fix sensor numbers by name, e.g. <code>["Master Bedroom Air Sensor 01"]</code></td></tr>
 <tr><td><code>poll_seconds</code></td><td>Safety poll (60). HomeKit pushes changes instantly anyway</td></tr>
 <tr><td><code>offline_grace_seconds</code></td><td>Short Wi-Fi drops aren't shown in Savant (120)</td></tr>
 </table>
@@ -92,14 +93,15 @@ sudo ./macos/install.sh</pre>
 <li>On the thermostat: <b>Menu &gt; Connect HomeKit</b>. It shows an 8-digit code (123-45-678). <b>The code changes each time that screen opens</b>, so use the one showing now, not a photo.</li>
 <li>On the bridge machine run <code>t10link pair</code> and type the code (it's hidden as you type). The thermostat's Wi-Fi sleeps a lot; if pairing can't find it, just run <code>t10link pair</code> again.</li>
 <li>It says <b>Paired</b>. The bridge picks it up straight away: <code>t10link status</code> shows <code>SYS_ONLINE=1</code>.</li>
+<li>With several thermostats, repeat for each one: <code>t10link pair</code> pairs the next one that isn't paired yet and says which; <code>t10link pair 2</code> pairs thermostat 2.</li>
 </ol>
-<p>Only HomeKit's long-term pairing keys are saved (<code>pairing.json</code> in the install folder, readable by the service user only). The setup code is never stored. The Honeywell Home / Resideo app keeps working alongside.</p>
-<p>To unpair: <code>t10link unpair</code>. If the pairing keys are lost, reset HomeKit on the thermostat (Menu &gt; Advanced Setup &gt; Reset &gt; HomeKit Reset) and pair again.</p>
+<p>Only HomeKit's long-term pairing keys are saved (<code>pairing.json</code> in the install folder, and <code>pairing-2.json</code>, <code>pairing-3.json</code> ... for the other thermostats; readable by the service user only). The setup code is never stored. The Honeywell Home / Resideo app keeps working alongside.</p>
+<p>To unpair: <code>t10link unpair</code> (<code>t10link unpair 2</code> for thermostat 2). If the pairing keys are lost, reset HomeKit on the thermostat (Menu &gt; Advanced Setup &gt; Reset &gt; HomeKit Reset) and pair again.</p>
 <h2 id="blueprint-setup">Blueprint setup</h2>
 <ol>
 <li>Import <code>profile/blueprint-import/honeywell_t10link.xml</code>. The <code>.htm</code> and <code>.icns</code> beside it give the Documentation tab and the icon. Search for <b>T10Link</b> (or Honeywell T10).</li>
 <li>Drag in one <b>Honeywell T10Link</b> component. Ethernet: <b>Device IP Address</b> = the machine running the bridge (the Savant host's own IP if it runs there), port 2400.</li>
-<li><b>HVAC data table</b>: one row.</li>
+<li><b>HVAC data table</b>: one row per thermostat. For one thermostat:</li>
 </ol>
 <table>
 <tr><th>Column</th><th>Value</th></tr>
@@ -112,6 +114,35 @@ sudo ./macos/install.sh</pre>
 <ol>
 <li>Upload. Within a few seconds System Monitor &gt; State Values shows <code>SYS_ONLINE</code> = 1 and <code>ThermostatCurrentTemperature_1</code> with the room temperature.</li>
 </ol>
+<h2 id="several-thermostats">Several thermostats</h2>
+<p>One bridge handles all the thermostats in the house, and Blueprint needs <b>one</b> T10Link component for it. Each thermostat is one row in the HVAC data table. Don't add a second T10Link component for the same bridge, and don't import the profile again.</p>
+<ol>
+<li><p>List every thermostat in <code>config.json</code>, in the order you want to number them:</p>
+<pre>"thermostats": [
+{"ip": "192.168.1.50"},
+{"ip": "192.168.1.51"},
+{"ip": "192.168.1.52"}
+],</pre>
+<p>The first is thermostat 1, the second thermostat 2, and so on. Keep the order once Savant is set up: the number ties each data table row to its thermostat. Add new thermostats at the end. Then <code>t10link restart</code>.</p></li>
+<li>Pair each one: <code>t10link pair</code> (repeat it; it pairs the next unpaired thermostat), or <code>t10link pair 2</code> for a particular one. <code>t10link status</code> shows <code>T_PAIRED</code>, <code>T2_PAIRED</code> ...</li>
+<li>In Blueprint's HVAC data table add one row per thermostat on the same T10Link component, with <b>ThermostatAddress [1]</b> = its number: 1, 2, 3 ... Each row gets its own Zone, and its own Heat / Cool / Auto ticks.</li>
+</ol>
+<table>
+<tr><th>Row</th><th>Controller</th><th>ThermostatAddress [1]</th></tr>
+<tr><td>Living Room</td><td>T10Link</td><td>1</td></tr>
+<tr><td>Primary Bedroom</td><td>T10Link</td><td>2</td></tr>
+<tr><td>Upstairs</td><td>T10Link</td><td>3</td></tr>
+</table>
+<p><b>State names.</b> Thermostat 1 keeps the names in Appendix A. Thermostat <i>n</i> has the same states with:</p>
+<ul>
+<li>Savant's address suffix: <code>ThermostatMode_2</code>, <code>ThermostatCurrentTemperature_2</code>, <code>IsCurrentHVACModeHeat_2</code></li>
+<li><code>Tn_</code> instead of <code>T_</code>: <code>T2_MODE</code>, <code>T2_TEMP</code>, <code>T2_ONLINE</code>, <code>T2_ERROR</code></li>
+<li><code>Tn_</code> in front of the room sensors: <code>T2_SENSOR1_TEMP</code>, <code>T2_SENSOR1_MOTION</code></li>
+</ul>
+<p>The <code>SYS_</code> states cover the whole bridge: <code>SYS_ONLINE</code> = 1 only when every thermostat is connected, and <code>SYS_ERROR</code> names the thermostat, e.g. "thermostat 2: thermostat unreachable". Gate an automation for one thermostat on its own <code>T_ONLINE</code> / <code>T2_ONLINE</code>.</p>
+<p><b>Custom actions</b> take a <b>Thermostat</b> argument (1, 2, 3 ...; blank = 1).</p>
+<p>The shipped profile has states for 8 thermostats. For more (up to 16), regenerate it: <code>python3 profile/generate_profile.py --thermostats 12</code>, then re-import it.</p>
+<div class="note"><p>Several thermostats were tested with simulated thermostats (built from a real T10's HomeKit data), and a single T10 Pro on real hardware.</p></div>
 <h2 id="using-it-in-savant">Using it in Savant</h2>
 <ul>
 <li><b>Climate screen</b>: mode, setpoints and temperature work from the Savant app's built-in HVAC screen.</li>
@@ -121,13 +152,13 @@ sudo ./macos/install.sh</pre>
 <li>In the Savant app, set up the climate schedule for the zone. At each period Savant sends the heat and cool setpoints; the bridge writes the one the current mode uses and saves the other (see the setpoint note under <a href="#what-works">What works</a>).</li>
 <li>Check once: after a scheduled change, the thermostat's screen should show the new setpoint with no "Hold" message.</li>
 </ol></li>
-<li><b>Triggers and workflows</b>: use the <code>T_*</code> and <code>SENSORn_*</code> states. Gate automations on <code>SYS_ONLINE</code> = 1. Examples:
+<li><b>Triggers and workflows</b>: use the <code>T_*</code> and <code>SENSORn_*</code> states (thermostat 2: <code>T2_*</code>, <code>T2_SENSORn_*</code>). Gate automations on <code>SYS_ONLINE</code> = 1 (or one thermostat's <code>T_ONLINE</code>). Examples:
 <ul>
 <li><code>T_FILTER1_CHANGE</code> = 1 &#8594; send a notification.</li>
 <li><code>SENSOR1_MOTION</code> = 1 &#8594; a room is in use.</li>
 <li><code>T_STATE</code> = Heating / Cooling &#8594; show an icon on a custom screen.</li>
 </ul></li>
-<li><b>Custom actions</b> (Workflows &gt; Custom): <code>SetMode</code>, <code>SetHeatSetpoint</code>, <code>SetCoolSetpoint</code>, <code>SetRange</code>, <code>ClearSavedSetpoints</code>, <code>ResetFilter1</code>, <code>ResetFilter2</code>, <code>RefreshThermostat</code>, <code>RequestAllStates</code>.</li>
+<li><b>Custom actions</b> (Workflows &gt; Custom): <code>SetMode</code>, <code>SetHeatSetpoint</code>, <code>SetCoolSetpoint</code>, <code>SetRange</code>, <code>ClearSavedSetpoints</code>, <code>ResetFilter1</code>, <code>ResetFilter2</code>, <code>RefreshThermostat</code> (each with a Thermostat argument: 1, 2, 3 ..., blank = 1), <code>RefreshAllThermostats</code>, <code>RequestAllStates</code>.</li>
 </ul>
 <p>Every state is listed in Appendix A.</p>
 <h2 id="the-t10link-command">The t10link command</h2>
@@ -135,27 +166,29 @@ sudo ./macos/install.sh</pre>
 <tr><th>Command</th><th>What it does</th></tr>
 <tr><td><code>t10link status</code></td><td>Service state and the key states</td></tr>
 <tr><td><code>t10link states</code></td><td>Every state the bridge is sending to Savant</td></tr>
-<tr><td><code>t10link send SETCOOL 74</code></td><td>Send one command and show the reply</td></tr>
+<tr><td><code>t10link send SETCOOL 74</code></td><td>Send one command and show the reply (thermostat 2: <code>t10link send @2 SETCOOL 74</code>)</td></tr>
 <tr><td><code>t10link logs [n]</code> / <code>t10link logs -f</code></td><td>Recent log lines / follow the log</td></tr>
 <tr><td><code>t10link restart</code> / <code>start</code> / <code>stop</code></td><td>Control the service (on a Mac with <code>sudo</code>)</td></tr>
-<tr><td><code>t10link pair</code> / <code>unpair</code></td><td>HomeKit pairing</td></tr>
-<tr><td><code>t10link dump</code></td><td>Every HomeKit service and value the thermostat exposes</td></tr>
+<tr><td><code>t10link pair [N]</code> / <code>unpair [N]</code></td><td>HomeKit pairing (N = thermostat number)</td></tr>
+<tr><td><code>t10link dump [N]</code></td><td>Every HomeKit service and value thermostat N exposes (default 1)</td></tr>
 <tr><td><code>t10link version</code></td><td>Bridge version</td></tr>
 </table>
 <p>Logs: <code>journalctl -u t10link-bridge</code> on Linux; <code>~/T10Link/logs/bridge.log</code> on a Mac.</p>
 <p><b>Uninstall</b>: <code>sudo /opt/t10link/uninstall.sh</code> (Linux) or <code>sudo t10link uninstall</code> (Mac). Add <code>--keep-config</code> to save the settings and pairing first; reinstalling on a Mac restores them automatically. The thermostat keeps the bridge's HomeKit pairing, so keep that backup, or run <code>t10link unpair</code> before uninstalling if you won't be back.</p>
-<p>Commands the bridge accepts on port 2400: <code>SETMODE OFF|HEAT|COOL|AUTO</code>, <code>SETHEAT &lt;t&gt;</code>, <code>SETCOOL &lt;t&gt;</code>, <code>SETTEMP &lt;t&gt;</code> (active setpoint), <code>SETRANGE &lt;heat&gt;,&lt;cool&gt;</code>, <code>INCHEAT</code>, <code>DECHEAT</code>, <code>INCCOOL</code>, <code>DECCOOL</code>, <code>RESETFILTER &lt;1|2&gt;</code>, <code>CLEARSAVED</code> (forget saved setpoints), <code>DUMP</code>, <code>REFRESH</code>, <code>PING</code>.</p>
+<p>Commands the bridge accepts on port 2400: <code>SETMODE OFF|HEAT|COOL|AUTO</code>, <code>SETHEAT &lt;t&gt;</code>, <code>SETCOOL &lt;t&gt;</code>, <code>SETTEMP &lt;t&gt;</code> (active setpoint), <code>SETRANGE &lt;heat&gt;,&lt;cool&gt;</code>, <code>INCHEAT</code>, <code>DECHEAT</code>, <code>INCCOOL</code>, <code>DECCOOL</code>, <code>RESETFILTER &lt;1|2&gt;</code>, <code>CLEARSAVED</code> (forget saved setpoints), <code>DUMP</code>, <code>REFRESH</code>, <code>PING</code>. Put <code>@N </code> in front for thermostat N (<code>@2 SETHEAT 70</code>); without it a command goes to thermostat 1 (<code>REFRESH</code> to all). The profile sends the same with colons, <code>@2:SETHEAT:70</code>.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <table>
 <tr><th>Symptom</th><th>Fix</th></tr>
-<tr><td><code>SYS_PAIRED</code> = 0</td><td>Run <code>t10link pair</code></td></tr>
+<tr><td><code>SYS_PAIRED</code> = 0</td><td>Run <code>t10link pair</code>. With several thermostats, <code>T_PAIRED</code> / <code>T2_PAIRED</code> ... show which one, and <code>t10link pair</code> pairs the next unpaired one</td></tr>
 <tr><td>Pairing: "already PAIRED to another controller"</td><td>Remove the thermostat from Apple Home, or Menu &gt; Advanced Setup &gt; Reset &gt; HomeKit Reset</td></tr>
 <tr><td>Pairing fails with the right code</td><td>The code changes every time Connect HomeKit opens; reopen it and use the new one. After several wrong tries the thermostat locks pairing for a while</td></tr>
-<tr><td><code>SYS_ONLINE</code> = 0, <code>SYS_ERROR</code> = thermostat unreachable</td><td>Check <code>thermostat_ip</code> (DHCP reservation), that the thermostat is on Wi-Fi, and <code>ping</code> it from the bridge. Its Wi-Fi sleeps: the first ping may fail</td></tr>
+<tr><td><code>SYS_ONLINE</code> = 0, <code>SYS_ERROR</code> = thermostat unreachable</td><td><code>SYS_ERROR</code> names the thermostat when there are several. Check its <code>ip</code> in <code>config.json</code> (DHCP reservation), that the thermostat is on Wi-Fi, and <code>ping</code> it from the bridge. Its Wi-Fi sleeps: the first ping may fail</td></tr>
 <tr><td>Mac install: "Python 3.10 or newer not found"</td><td>Install Python 3.12+ from python.org (Apple's <code>python3</code> is 3.9), then rerun the installer</td></tr>
 <tr><td>Pi install: venv or pip errors</td><td><code>sudo apt update &amp;&amp; sudo apt install python3-venv</code>, then rerun. 32-bit Pi OS downloads ready-made packages from piwheels.org, so it needs that site reachable once</td></tr>
 <tr><td>Component shows disconnected in Savant</td><td>Bridge not running (<code>t10link status</code>), wrong IP/port in Blueprint, the Savant host isn't in <code>allowed_clients</code> (<code>SYS_REJECTED_CLIENT</code> shows who was refused), or a Mac's firewall blocks Python</td></tr>
 <tr><td>Savant shows a setpoint the thermostat doesn't</td><td>It's a saved setpoint for another mode (<code>T_SAVED_SETPOINTS</code>), applied when the mode switches. <code>t10link send CLEARSAVED</code> forgets it</td></tr>
+<tr><td><code>SYS_ERROR</code> = "no thermostat 3 in config.json"</td><td>A data table row (or a custom action) uses a ThermostatAddress that isn't in the bridge's <code>thermostats</code> list</td></tr>
+<tr><td>A second thermostat's row does nothing</td><td>Check that it's on the same T10Link component, that its ThermostatAddress matches its position in <code>config.json</code>, and that it's paired (<code>T2_PAIRED</code> = 1)</td></tr>
 <tr><td>Scheduled changes are undone later</td><td>The thermostat's own schedule is still on: turn it off at the thermostat</td></tr>
 <tr><td><code>T_ERROR</code> = "not confirmed by the thermostat"</td><td>The thermostat didn't accept the change (outside its limits, or locked at the wall). <code>t10link logs</code></td></tr>
 <tr><td>Documentation tab greyed out / "?" icon</td><td>Re-import with the <code>.xml</code>, <code>.htm</code> and <code>.icns</code> side by side in <code>blueprint-import/</code></td></tr>
@@ -168,18 +201,20 @@ sudo ./macos/install.sh</pre>
 <li>In Heat/Cool mode the thermostat's real setpoint is HomeKit's <i>target temperature</i>. Its heating/cooling thresholds hold the Auto values, and writes to them are reverted outside Auto. The bridge confirms a change only when the value still holds on a read two seconds later, because a rejected write is echoed once before the thermostat reverts it.</li>
 </ul>
 <p>Every state the bridge sends. Temperatures are in the thermostat's display units (<code>T_UNITS</code>).</p>
+<p>These are thermostat 1's names. With several thermostats, thermostat <i>n</i>'s states are the same with <code>T_</code> replaced by <code>Tn_</code> (<code>T2_MODE</code>), <code>SENSOR</code> prefixed with <code>Tn_</code> (<code>T2_SENSOR1_TEMP</code>) and <code>_1</code> replaced by <code>_n</code> (<code>ThermostatMode_2</code>). The <code>SYS_</code> states cover the whole bridge.</p>
 <h3 id="system">System</h3>
 <table>
 <tr><th>State</th><th>Type</th><th>Meaning</th></tr>
-<tr><td><code>SYS_ONLINE</code></td><td>integer</td><td>1 = bridge has a live HomeKit session with the thermostat</td></tr>
-<tr><td><code>SYS_PAIRED</code></td><td>integer</td><td>1 = paired (pairing.json present). 0 = run: t10link pair</td></tr>
-<tr><td><code>SYS_LIVE</code></td><td>integer</td><td>1 = HomeKit push events subscribed (0 = polling only)</td></tr>
+<tr><td><code>SYS_ONLINE</code></td><td>integer</td><td>1 = bridge has a live HomeKit session with every thermostat (per thermostat: T_ONLINE)</td></tr>
+<tr><td><code>SYS_PAIRED</code></td><td>integer</td><td>1 = every thermostat is paired. 0 = run: t10link pair (per thermostat: T_PAIRED)</td></tr>
+<tr><td><code>SYS_LIVE</code></td><td>integer</td><td>1 = HomeKit push events subscribed on every thermostat (0 = polling only)</td></tr>
 <tr><td><code>SYS_LAST_UPDATE</code></td><td>string</td><td>Time of the last value read from the thermostat</td></tr>
 <tr><td><code>SYS_LAST_COMMAND</code></td><td>string</td><td>Last command from Savant and its result</td></tr>
-<tr><td><code>SYS_ERROR</code></td><td>string</td><td>Last bridge error, blank when healthy</td></tr>
+<tr><td><code>SYS_ERROR</code></td><td>string</td><td>Bridge errors, blank when healthy (with several thermostats: "thermostat 2: ...")</td></tr>
 <tr><td><code>SYS_VERSION</code></td><td>string</td><td>Bridge version</td></tr>
 <tr><td><code>SYS_REJECTED_CLIENT</code></td><td>string</td><td>Last connection refused by allowed_clients: IP and time</td></tr>
-<tr><td><code>SYS_SENSOR_COUNT</code></td><td>integer</td><td>Room sensors found</td></tr>
+<tr><td><code>SYS_SENSOR_COUNT</code></td><td>integer</td><td>Room sensors found, all thermostats</td></tr>
+<tr><td><code>SYS_THERMOSTAT_COUNT</code></td><td>integer</td><td>Thermostats in config.json</td></tr>
 </table>
 <h3 id="thermostat-t_">Thermostat (T_...)</h3>
 <table>
@@ -187,6 +222,8 @@ sudo ./macos/install.sh</pre>
 <tr><td><code>T_NAME</code></td><td>string</td><td>Thermostat name (HomeKit)</td></tr>
 <tr><td><code>T_MODEL</code></td><td>string</td><td>Model</td></tr>
 <tr><td><code>T_FIRMWARE</code></td><td>string</td><td>Firmware version</td></tr>
+<tr><td><code>T_IP</code></td><td>string</td><td>Thermostat IP address (from config.json)</td></tr>
+<tr><td><code>T_PAIRED</code></td><td>integer</td><td>1 = this thermostat is paired with the bridge</td></tr>
 <tr><td><code>T_ONLINE</code></td><td>integer</td><td>1 = thermostat reachable (0 after offline_grace_seconds unreachable)</td></tr>
 <tr><td><code>T_MODE</code></td><td>string</td><td>Off</td><td>Heat</td><td>Cool</td><td>Auto (Unknown while offline)</td></tr>
 <tr><td><code>T_STATE</code></td><td>string</td><td>Idle</td><td>Heating</td><td>Cooling (Unknown while offline)</td></tr>
@@ -201,6 +238,7 @@ sudo ./macos/install.sh</pre>
 <tr><td><code>T_OCCUPIED</code></td><td>integer</td><td>1 = thermostat's own occupancy sensor sees someone</td></tr>
 <tr><td><code>T_FILTER1_CHANGE</code></td><td>integer</td><td>1 = filter 1 reminder is due</td></tr>
 <tr><td><code>T_FILTER2_CHANGE</code></td><td>integer</td><td>1 = filter 2 reminder is due</td></tr>
+<tr><td><code>T_SENSOR_COUNT</code></td><td>integer</td><td>Room sensors found on this thermostat</td></tr>
 <tr><td><code>T_PENDING</code></td><td>string</td><td>What is being changed while a command is being confirmed, else blank</td></tr>
 <tr><td><code>T_SAVED_SETPOINTS</code></td><td>string</td><td>Setpoints saved for another mode, applied when the thermostat switches to it (e.g. heat 68)</td></tr>
 <tr><td><code>T_ERROR</code></td><td>string</td><td>Last command error, blank when fine</td></tr>

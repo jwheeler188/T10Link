@@ -1,5 +1,24 @@
 # Changelog
 
+
+## 1.3.0 (2026-11-08)
+
+- **Several thermostats on one bridge and one Blueprint component** (up to 8 with the shipped
+  profile, 16 with a regenerated one). List them under `thermostats` in `config.json`; each is one
+  row in the HVAC data table with ThermostatAddress = its position in the list.
+- HVAC actions now send the ThermostatAddress (`@2:SETHEAT:70`); custom actions take an optional
+  Thermostat argument (blank = 1). Commands without an address still go to thermostat 1.
+- Thermostat *n*'s states: `ThermostatMode_n`, `Tn_MODE`, `Tn_SENSOR1_TEMP` ... Thermostat 1 keeps
+  every 1.2 state name.
+- `t10link pair [N]` / `unpair [N]` / `dump [N]`; `t10link pair` pairs the next unpaired thermostat.
+  Thermostat 2's pairing is kept in `pairing-2.json`, and so on.
+- New states: `T_IP`, `T_PAIRED`, `T_SENSOR_COUNT`, `SYS_THERMOSTAT_COUNT`. `SYS_ONLINE`,
+  `SYS_PAIRED` and `SYS_LIVE` are 1 when they hold for every thermostat; `SYS_ERROR` names the
+  thermostat; `SYS_SENSOR_COUNT` counts all of them.
+- macOS: `t10link pair` / `unpair` / `dump` work on Intel Macs.
+- Upgrading: re-run the installer (it keeps `config.json` and the pairing), then re-import the
+  profile in Blueprint. A 1.2 `config.json` with `thermostat_ip` keeps working.
+
 ## 1.2.0 (2026-11-08)
 
 - The bridge runs on **macOS** as well as Linux: `sudo ./macos/install.sh` installs it as a launchd

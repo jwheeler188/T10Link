@@ -167,27 +167,28 @@ async def protocol_tests():
     tmp = Path(tempfile.mkdtemp())
     cfg = dict(b.DEFAULT_CONFIG, tcp_port=0, poll_seconds=15, confirm_seconds=6, allowed_clients="auto")
     bridge = b.Bridge(cfg, tmp)
+    t1 = bridge.thermostats[0]
+    check("1.2 config (thermostat_ip): one thermostat at that ip", len(bridge.thermostats) == 1 and t1.ip == cfg["thermostat_ip"])
     fake = FakeT10(ACCS)
     # remember the original thresholds for the revert simulation
     fake.vals[("orig", 43)] = fake.vals[(2, 43)]
     fake.vals[("orig", 44)] = fake.vals[(2, 44)]
 
     async def fake_connect():
-        bridge.pairing = fake
-        fake.dispatcher_connect(bridge.on_event)
-        fake.dispatcher_availability_changed(bridge.on_available)
-        bridge.model = b.Model(await fake.list_accessories_and_characteristics())
-        await bridge.publish({"SYS_PAIRED": 1, "SYS_LIVE": 1})
-        await bridge.set_online(True)
-        await bridge.read_all()
+        t1.pairing = fake
+        fake.dispatcher_connect(t1.on_event)
+        fake.dispatcher_availability_changed(t1.on_available)
+        t1.model = b.Model(await fake.list_accessories_and_characteristics())
+        await t1.publish({"SYS_PAIRED": 1, "SYS_LIVE": 1})
+        await t1.set_online(True)
+        await t1.read_all()
         return True
 
-    bridge.connect = fake_connect
-    bridge.stopping, bridge.wake = asyncio.Event(), asyncio.Event()
-    await bridge.publish({"SYS_VERSION": b.VERSION})
+    t1.connect = fake_connect
+    await bridge.start()
     srv = await asyncio.start_server(bridge.handle_tcp, "127.0.0.1", 0)
     port = srv.sockets[0].getsockname()[1]
-    hap = asyncio.ensure_future(bridge.hap_loop())
+    hap = asyncio.ensure_future(t1.hap_loop())
     await asyncio.sleep(0.3)
 
     r, w = await asyncio.open_connection("127.0.0.1", port)
@@ -247,14 +248,14 @@ async def protocol_tests():
     check("entering Heat applies the saved heat setpoint 66",
           any("heat setpoint 66 F: confirmed" in x for x in out) and fake.vals[(2, 38)] == 19.0
           and len(fake.writes) == nwrites + 2, (fake.vals[(2, 38)], out))
-    check("saved heat cleared once applied", "T_SAVED_SETPOINTS=" in out and "heat" not in bridge.saved, bridge.saved)
+    check("saved heat cleared once applied", "T_SAVED_SETPOINTS=" in out and "heat" not in t1.saved, t1.saved)
     out = await send("SETHEAT 69", 4.5)
     check("Heat mode SETHEAT 69 confirmed", any("heat setpoint 69 F: confirmed" in x for x in out), out)
     out = await send("SETRANGE 68,77", 5)
     check("SETRANGE in Heat mode: heat written, cool saved",
           any("heat setpoint 68 F: confirmed" in x for x in out) and any("cool setpoint 77 F: saved" in x for x in out)
           and "ThermostatCurrentCoolPoint_1=77" in out, out)
-    check("saved cool survives a restart", b.Bridge(cfg, tmp).saved.get("cool") == 77)
+    check("saved cool survives a restart", b.Bridge(cfg, tmp).thermostats[0].saved.get("cool") == 77)
     out = await send("INCTEMP", 4.5)
     check("INCTEMP in Heat mode raises the heat setpoint 68 -> 69", any("heat setpoint 69 F: confirmed" in x for x in out), out)
     check("CurrentChangeOverStatus_1 false outside Auto", bridge.values.get("CurrentChangeOverStatus_1") == "false")
@@ -275,11 +276,11 @@ async def protocol_tests():
     # offline: SYS_ONLINE drops at once, mode Unknown only after the grace period
     bridge.cfg["offline_grace_seconds"] = 0.5
     fake.fail_reads = True
-    bridge.wake.set()
+    t1.wake.set()
     await asyncio.sleep(0.4)
-    bridge.wake.set()
+    t1.wake.set()
     await asyncio.sleep(1.0)
-    bridge.wake.set()
+    t1.wake.set()
     await asyncio.sleep(6)
     cur = dict(ln.split("=", 1) for ln in lines if "=" in ln)
     check("offline: SYS_ONLINE=0 with an error", cur.get("SYS_ONLINE") == "0" and "unreachable" in cur.get("SYS_ERROR", ""), (cur.get("SYS_ONLINE"), cur.get("SYS_ERROR")))
@@ -287,7 +288,7 @@ async def protocol_tests():
           cur.get("T_ONLINE") == "0" and cur.get("T_MODE") == "Unknown" and cur.get("T_TEMP") == "70",
           (cur.get("T_ONLINE"), cur.get("T_MODE"), cur.get("T_TEMP")))
     fake.fail_reads = False
-    bridge.wake.set()
+    t1.wake.set()
     await asyncio.sleep(16)
     cur = dict(ln.split("=", 1) for ln in lines if "=" in ln)
     check("recovery: back online", cur.get("SYS_ONLINE") == "1" and cur.get("T_MODE") == "Heat" and cur.get("SYS_ERROR") == "",
@@ -306,8 +307,207 @@ async def protocol_tests():
     srv.close()
 
 
+# ---------------------------------------------------------------------------
+def multi_unit_tests():
+    check("key_for: thermostat 1 keeps 1.2 names",
+          [b.key_for(1, k) for k in ("T_MODE", "SENSOR1_TEMP", "ThermostatMode_1")] == ["T_MODE", "SENSOR1_TEMP", "ThermostatMode_1"])
+    check("key_for: thermostat 2 names",
+          [b.key_for(2, k) for k in ("T_MODE", "SENSOR3_TEMP", "ThermostatMode_1", "IsCurrentHVACModeHeat_1")]
+          == ["T2_MODE", "T2_SENSOR3_TEMP", "ThermostatMode_2", "IsCurrentHVACModeHeat_2"])
+    d1, d3 = [k for k, _, _ in b.state_defs(4, 1)], [k for k, _, _ in b.state_defs(4, 3)]
+    check("state_defs(4, 1) = 1.2's states plus the new ones", "T2_MODE" not in d1 and "T_PAIRED" in d1 and "SYS_THERMOSTAT_COUNT" in d1)
+    check("state_defs(4, 3): no duplicates, thermostat 3 present",
+          len(d3) == len(set(d3)) and {"ThermostatMode_3", "T3_MODE", "T3_SENSOR4_MOTION", "ThermostatCurrentSetPoint_3"} <= set(d3))
+    check("state_defs scale per thermostat", len(d3) - len(d1) == 2 * (len(d1) - len(b.SYS_STATES)))
+    tcs = b.thermostat_configs(dict(b.DEFAULT_CONFIG, thermostats=[{"ip": "10.0.0.5"}, "10.0.0.6"]))
+    check("thermostats: list position = address; plain ip strings allowed",
+          [(t["n"], t["ip"], t["port"]) for t in tcs] == [(1, "10.0.0.5", 80), (2, "10.0.0.6", 80)])
+    for name, bad in (("duplicate ip", ["10.0.0.5", {"ip": "10.0.0.5"}]), ("missing ip", [{"port": 80}]),
+                      ("17 thermostats", [f"10.0.0.{i}" for i in range(17)]), ("not a list", {"ip": "10.0.0.5"})):
+        try:
+            b.thermostat_configs(dict(b.DEFAULT_CONFIG, thermostats=bad))
+            check(f"thermostats refused: {name}", False)
+        except ValueError:
+            check(f"thermostats refused: {name}", True)
+    tmp = Path(tempfile.mkdtemp())
+    cfg = dict(b.DEFAULT_CONFIG, thermostats=["10.0.0.5", "10.0.0.6", "10.0.0.7"])
+    (tmp / "pairing.json").write_text("{}")
+    check("pair with no number: first unpaired thermostat (2)", b.pick_thermostat(cfg, tmp, None, "pair")["n"] == 2)
+    check("pair 3", b.pick_thermostat(cfg, tmp, 3, "pair")["ip"] == "10.0.0.7")
+    for name, n, purpose in (("unpair needs a number with 3 thermostats", None, "unpair"), ("no thermostat 4", 4, "dump")):
+        try:
+            b.pick_thermostat(cfg, tmp, n, purpose)
+            check(name, False)
+        except SystemExit:
+            check(name, True)
+    check("pairing files: pairing.json, pairing-2.json",
+          (b.file_for(tmp, "pairing", 1).name, b.file_for(tmp, "pairing", 2).name) == ("pairing.json", "pairing-2.json"))
+
+
+async def multi_protocol_tests():
+    tmp = Path(tempfile.mkdtemp())
+    cfg = dict(b.DEFAULT_CONFIG, tcp_port=0, poll_seconds=15, confirm_seconds=6, allowed_clients="auto",
+               thermostats=[{"ip": "192.168.1.50"}, {"ip": "192.168.1.51"}, {"ip": "192.168.1.52"}])
+    bridge = b.Bridge(cfg, tmp)
+    t1, t2, t3 = bridge.thermostats
+    f1, f2 = FakeT10(ACCS), FakeT10(ACCS)
+    f2.vals[(2, 36)] = 1                 # thermostat 2 is heating at 70 F
+    f2.vals[(2, 37)] = 21.0
+    for f in (f1, f2):
+        f.vals[("orig", 43)], f.vals[("orig", 44)] = f.vals[(2, 43)], f.vals[(2, 44)]
+
+    def fake_connect(t, fake):
+        async def go():
+            t.pairing = fake
+            fake.dispatcher_connect(t.on_event)
+            fake.dispatcher_availability_changed(t.on_available)
+            t.model = b.Model(await fake.list_accessories_and_characteristics())
+            await t.publish({"SYS_PAIRED": 1, "SYS_LIVE": 1})
+            await t.set_online(True)
+            await t.read_all()
+            return True
+        return go
+
+    t1.connect, t2.connect = fake_connect(t1, f1), fake_connect(t2, f2)
+    # thermostat 3 keeps the real connect(): no pairing-3.json, so it reports "not paired"
+    await bridge.start()
+    srv = await asyncio.start_server(bridge.handle_tcp, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+    loops = [asyncio.ensure_future(t.hap_loop()) for t in (t1, t2, t3)]
+    await asyncio.sleep(0.5)
+    r, w = await asyncio.open_connection("127.0.0.1", port)
+    lines = []
+
+    async def reader():
+        while True:
+            ln = await r.readline()
+            if not ln:
+                return
+            lines.append(ln.decode().strip())
+
+    rt = asyncio.ensure_future(reader())
+
+    async def send(cmd, wait=0.5):
+        start = len(lines)
+        w.write(cmd.encode() + b"\n")
+        await w.drain()
+        await asyncio.sleep(wait)
+        return lines[start:]
+
+    await asyncio.sleep(0.3)
+    cur = lambda: dict(ln.split("=", 1) for ln in lines if "=" in ln)  # noqa: E731
+    st = cur()
+    check("3 thermostats: each has its own states",
+          (st.get("ThermostatMode_1"), st.get("ThermostatMode_2"), st.get("T2_MODE"), st.get("T2_TEMP")) == ("Cool", "Heat", "Heat", "70"),
+          (st.get("ThermostatMode_1"), st.get("ThermostatMode_2"), st.get("T2_MODE"), st.get("T2_TEMP")))
+    check("3 thermostats: T2_IP, T2_SENSOR1_NAME, counts",
+          st.get("T2_IP") == "192.168.1.51" and st.get("T2_SENSOR1_NAME") == "Master Bedroom Air Sensor 01"
+          and st.get("SYS_THERMOSTAT_COUNT") == "3" and st.get("SYS_SENSOR_COUNT") == "2", st.get("SYS_SENSOR_COUNT"))
+    check("unpaired thermostat 3: T3_PAIRED=0, SYS_PAIRED=0, SYS_ONLINE=0, error names it",
+          st.get("T3_PAIRED") == "0" and st.get("T_PAIRED") == "1" and st.get("SYS_PAIRED") == "0" and st.get("SYS_ONLINE") == "0"
+          and "thermostat 3: not paired: run  t10link pair 3" in st.get("SYS_ERROR", ""), st.get("SYS_ERROR"))
+    check("no states for addresses 4+", not any(k.startswith(("T4_", "ThermostatMode_4")) for k in st))
+
+    n1 = len(f1.writes)
+    out = await send("@2 SETHEAT 71", 4.5)
+    check("@2 SETHEAT 71 goes to thermostat 2 only", len(f1.writes) == n1 and f2.writes[-1] == [(2, 38, 21.5)], f2.writes[-1:])
+    check("@2: T2_PENDING, then confirmed with the address in SYS_LAST_COMMAND",
+          "T2_PENDING=heat setpoint 71 F" in out and "SYS_LAST_COMMAND=thermostat 2: heat setpoint 71 F: confirmed" in out, out)
+    check("@2: ThermostatCurrentHeatPoint_2=71, thermostat 1 untouched",
+          "ThermostatCurrentHeatPoint_2=71" in out and not any(x.startswith(("ThermostatCurrentHeatPoint_1", "T_PENDING")) for x in out), out)
+    n2 = len(f2.writes)
+    out = await send("SETCOOL 74", 4.5)
+    check("no @: thermostat 1", len(f2.writes) == n2 and f1.writes[-1] == [(2, 38, 23.0)] and "ThermostatCurrentCoolPoint_1=74" in out, out)
+    out = await send("@ SETMODE HEAT", 4.5)
+    check("blank address (@ ): thermostat 1", "ThermostatMode_1=Heat" in out and "ThermostatMode_2=Heat" not in out, out)
+    out = await send("@3 SETMODE COOL", 0.5)
+    check("@3 (not paired): T3_ERROR, nothing written", "T3_ERROR=thermostat not connected" in out, out)
+    out = await send("@4 PING")
+    check("@4 (not in config): refused", any(x.startswith("SYS_ERROR=no thermostat 4 in config.json") for x in out), out)
+    out = await send("@2:SETMODE:COOL", 4.5)     # the profile's form: no spaces
+    check("@2:SETMODE:COOL (profile form) -> thermostat 2", "ThermostatMode_2=Cool" in out and f2.vals[(2, 36)] == 2, out)
+    out = await send("@2:SETMODE:HEAT", 4.5)
+    out = await send("@:INCHEAT", 4.5)           # blank address from an empty action argument
+    check("@:INCHEAT (blank address) -> thermostat 1", any("thermostat 1: heat setpoint" in x for x in out), out)
+    out = await send("@x SETMODE OFF")
+    check("@x: refused", any(x.startswith("SYS_ERROR=no thermostat x") for x in out), out)
+    out = await send("@2 SETCOOL 77", 0.5)
+    check("@2 in Heat mode: cool saved for thermostat 2 only",
+          "T2_SAVED_SETPOINTS=cool 77" in out and json.loads((tmp / "setpoints-2.json").read_text()).get("cool") == 77
+          and "cool" not in t1.saved, out)
+    out = await send("@2 CLEARSAVED", 0.5)
+    check("@2 CLEARSAVED: thermostat 2 only", "T2_SAVED_SETPOINTS=" in out and not t2.saved, out)
+
+    # thermostat 2 drops off Wi-Fi: thermostat 1 keeps working
+    bridge.cfg["offline_grace_seconds"] = 0.5
+    f2.fail_reads = True
+    t2.wake.set()
+    await asyncio.sleep(0.4)
+    t2.wake.set()
+    await asyncio.sleep(1.0)
+    t2.wake.set()
+    await asyncio.sleep(1.5)
+    st = cur()
+    check("thermostat 2 offline: T2_ONLINE=0, T_ONLINE=1, error names thermostat 2",
+          st.get("T2_ONLINE") == "0" and st.get("T_ONLINE") == "1" and "thermostat 2: thermostat unreachable" in st.get("SYS_ERROR", ""),
+          (st.get("T2_ONLINE"), st.get("T_ONLINE"), st.get("SYS_ERROR")))
+    out = await send("SETHEAT 67", 4.5)          # thermostat 1 is in Heat now
+    check("thermostat 1 still controllable while 2 is offline", any("heat setpoint 67 F: confirmed" in x for x in out), out)
+
+    w.close()
+    rt.cancel()
+    bridge.request_stop("test")
+    for t in loops:
+        t.cancel()
+    srv.close()
+
+
+# ---------------------------------------------------------------------------
+def profile_tests():
+    """The generated Blueprint profile and the bridge agree: every command an action sends parses
+    to the right thermostat and verb, and every state the bridge can send has a parser."""
+    import xml.etree.ElementTree as ET
+    xml = HERE.parent / "profile" / "blueprint-import" / "honeywell_t10link.xml"
+    root = ET.parse(xml).getroot()
+    sample = {"ThermostatAddress": "2", "Thermostat": "3", "HeatPointTemperature": "68", "CoolPointTemperature": "76",
+              "Temperature": "70", "Mode": "HEAT", "Heat": "66", "Cool": "77"}
+    sent = {}
+    for act in root.iter("action"):
+        cmd = act.find("command_interface/command")
+        text = cmd.findtext("command_string") or ""
+        for prm in cmd.iter("parameter"):
+            text += sample[prm.get("action_argument")] if prm.get("action_argument") else (prm.text or "")
+        sent[act.get("name")] = text
+    want = {"SetHeatPointTemperature": ("2", "SETHEAT", "68"), "SetCoolPointTemperature": ("2", "SETCOOL", "76"),
+            "SetHVACModeAuto": ("2", "SETMODE", "AUTO"), "SetHVACModeOff": ("2", "SETMODE", "OFF"),
+            "IncreaseTemperatureAuto": ("2", "INCTEMP", ""), "SetTemperatureAuto": ("2", "SETTEMP", "70"),
+            "DecreaseCoolPointTemperature": ("2", "DECCOOL", ""), "UpdateHVACStatus": (None, "DUMP", ""),
+            "SetMode": ("3", "SETMODE", "HEAT"), "SetRange": ("3", "SETRANGE", "66,77"),
+            "ResetFilter2": ("3", "RESETFILTER", "2"), "ClearSavedSetpoints": ("3", "CLEARSAVED", ""),
+            "RefreshThermostat": ("3", "REFRESH", ""), "RefreshAllThermostats": (None, "REFRESH", ""),
+            "Ping": (None, "PING", "")}
+    bad = {k: (sent.get(k), b.parse_command(sent.get(k, ""))) for k, v in want.items() if b.parse_command(sent.get(k, "")) != v}
+    check("profile actions -> bridge commands (address, verb, argument)", not bad, bad)
+    check("no command parameter contains a space", not any(" " in (p.text or "") for p in root.iter("parameter")))
+    hv = [a for a in root.iter("action") if a.find("action_argument[@name='ThermostatAddress']") is not None]
+    check("every HVAC action sends its ThermostatAddress (except UpdateHVACStatus)",
+          all(any(p.get("action_argument") == "ThermostatAddress" for p in a.iter("parameter"))
+              for a in hv if a.get("name") != "UpdateHVACStatus"), [a.get("name") for a in hv])
+    parsers = {m.get("name") for m in root.iter("status_message")}
+    ent = root.find(".//entity[@name='Zone']")
+    n = int(ent.get("max_entities"))
+    check(f"profile: Zone entity takes {n} thermostats, parsers for all of them",
+          n >= 2 and {f"ThermostatMode_{n}", f"T{n}_MODE", f"T{n}_SENSOR4_TEMP"} <= parsers and f"T{n + 1}_MODE" not in parsers)
+    check("profile: parsers = state_defs exactly", parsers == {k for k, _, _ in b.state_defs(4, n)})
+
+
 if __name__ == "__main__":
     unit_tests()
     asyncio.run(protocol_tests())
+    print("\n-- several thermostats")
+    multi_unit_tests()
+    asyncio.run(multi_protocol_tests())
+    print("\n-- Blueprint profile")
+    profile_tests()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     sys.exit(1 if FAIL else 0)

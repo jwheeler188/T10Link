@@ -127,5 +127,5 @@ cat <<EOF
 
 EOF
 NEXT=1
-grep -q '"192.168.1.50"' "$DEST/config.json" && { echo "  $NEXT. Edit $DEST/config.json: thermostat_ip, and add the Savant host to allowed_clients."; NEXT=$((NEXT+1)); }
-[ -f "$DEST/pairing.json" ] || echo "  $NEXT. t10link pair   (on the thermostat: Menu > Connect HomeKit shows the code)"
+grep -q '"192.168.1.50"' "$DEST/config.json" && { echo "  $NEXT. Edit $DEST/config.json: each thermostat's ip under "thermostats", and add the Savant host to allowed_clients."; NEXT=$((NEXT+1)); }
+[ -f "$DEST/pairing.json" ] || echo "  $NEXT. t10link pair   (on the thermostat: Menu > Connect HomeKit shows the code; repeat for each thermostat)"
